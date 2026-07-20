@@ -1,0 +1,316 @@
+# -*- coding: utf-8 -*-
+"""
+plugin.audio.kexp -- KEXP live + 2-week archive browser (PROTOTYPE).
+
+Browse tree:
+    Listen live
+    Shows by day  -> date folders -> shows
+    Programs      -> program folders -> that program's shows
+    Hosts         -> host folders -> that host's shows
+
+Architecture notes (vs plugin.audio.internetradio, the parent design):
+
+  * Archive playback resolves at PLAY time via setResolvedUrl -- the
+    first deliberate departure from the family's no-resolve-handler
+    rule. Archive URLs are stable, but each one costs a
+    get_streaming_url API call; resolving while listing would burn
+    6-8 calls just to draw a folder. One call, exactly when needed.
+  * The resolved item carries kexp_mode=archive plus the playback
+    context; the resolver also writes archive_session.json as a
+    belt-and-braces handoff to the service (see service.py).
+  * Live playback keeps the family architecture exactly: the stream URL
+    is the item path, tagged kexp_mode=live.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import time
+import urllib.parse
+from datetime import datetime
+from typing import Any
+
+import xbmc
+import xbmcaddon
+import xbmcgui
+import xbmcplugin
+
+sys.path.insert(0, os.path.join(
+    xbmcaddon.Addon().getAddonInfo("path"), "resources", "lib"))
+import kexpdata  # noqa: E402
+
+ADDON = xbmcaddon.Addon()
+ADDON_ID: str = ADDON.getAddonInfo("id")
+HANDLE: int = int(sys.argv[1])
+BASE_URL: str = sys.argv[0]
+
+ITEM_PROP_MODE = "kexp_mode"          # "live" | "archive"
+
+_T0 = time.time()
+
+
+def trace(msg: str) -> None:
+    xbmc.log("[%s/plugin] (+%6.2fs h=%s) %s"
+             % (ADDON_ID, time.time() - _T0, HANDLE, msg), xbmc.LOGINFO)
+
+
+def build_url(**kwargs: str) -> str:
+    return BASE_URL + "?" + urllib.parse.urlencode(kwargs)
+
+
+def notify(message: str, error: bool = False) -> None:
+    icon = xbmcgui.NOTIFICATION_ERROR if error else xbmcgui.NOTIFICATION_INFO
+    xbmcgui.Dialog().notification("KEXP", message, icon, 4000)
+
+
+def bitrate_setting() -> str:
+    try:
+        return ADDON.getSettingString("bitrate") or "128"
+    except (RuntimeError, TypeError):
+        return "128"
+
+
+# --- listings ---------------------------------------------------------------
+
+def list_root() -> None:
+    xbmcplugin.setPluginCategory(HANDLE, "KEXP")
+    trace("root")
+
+    live = xbmcgui.ListItem(label="Listen live")
+    live.getMusicInfoTag().setTitle("KEXP live")
+    live.setProperty("IsPlayable", "true")
+    live.setProperty(ITEM_PROP_MODE, "live")
+    xbmcplugin.addDirectoryItem(
+        HANDLE, kexpdata.LIVE_STREAM_URL, live, isFolder=False)
+
+    for label, action in (("Shows by day", "days"),
+                          ("Programs", "programs"),
+                          ("Hosts", "hosts")):
+        li = xbmcgui.ListItem(label=label)
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url(action=action), li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
+
+
+def _day_label(day_key: str) -> str:
+    today = datetime.now().strftime("%Y-%m-%d")
+    if day_key == today:
+        return "Today"
+    try:
+        dt = datetime.strptime(day_key, "%Y-%m-%d")
+    except ValueError:
+        return day_key
+    yesterday = datetime.fromtimestamp(time.time() - 86400).strftime("%Y-%m-%d")
+    if day_key == yesterday:
+        return "Yesterday"
+    return dt.strftime("%a %b %d")
+
+
+def list_days() -> None:
+    xbmcplugin.setPluginCategory(HANDLE, "Shows by day")
+    shows = kexpdata.fetch_shows()
+    days = kexpdata.group_by_day(shows)
+    trace("days: %d day(s), %d show(s) total" % (len(days), len(shows)))
+    if not days:
+        notify("No shows returned from the KEXP API (see log)", error=True)
+    for day_key, day_shows in days:
+        li = xbmcgui.ListItem(
+            label="%s  [COLOR gray](%d)[/COLOR]"
+            % (_day_label(day_key), len(day_shows)))
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url(action="day", date=day_key), li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
+
+
+def show_listitem(show: dict[str, Any], with_day: bool = False) -> xbmcgui.ListItem:
+    label = kexpdata.show_label(show)
+    local = datetime.fromtimestamp(show["start_epoch"]).astimezone()
+    stamp = local.strftime("%a %H:%M" if with_day else "%H:%M")
+    li = xbmcgui.ListItem(label=f"{stamp}  {label}")
+    tag = li.getMusicInfoTag()
+    tag.setTitle(label)
+    tag.setArtist("KEXP")
+    art: str = str(show.get("program_image_uri")
+                   or show.get("image_uri") or "")
+    if art:
+        li.setArt({"thumb": art, "icon": art})
+    tagline: str = str(show.get("tagline") or "")
+    if tagline:
+        tag.setComment(tagline)
+    li.setProperty("IsPlayable", "true")
+    return li
+
+
+def _add_show_items(shows: list[dict[str, Any]], with_day: bool) -> None:
+    for s in shows:
+        # start_time as-is (offset-aware ISO) is what the resolver wants.
+        url = build_url(
+            action="play",
+            start=str(s.get("start_time", "")),
+            label=kexpdata.show_label(s),
+            art=str(s.get("program_image_uri") or s.get("image_uri") or ""),
+            start_epoch=str(s["start_epoch"]))
+        xbmcplugin.addDirectoryItem(
+            HANDLE, url, show_listitem(s, with_day), isFolder=False)
+
+
+def list_day(day_key: str) -> None:
+    xbmcplugin.setPluginCategory(HANDLE, _day_label(day_key))
+    xbmcplugin.setContent(HANDLE, "albums")   # unlock icon/wall views
+    shows = [s for k, ss in kexpdata.group_by_day(kexpdata.fetch_shows())
+             if k == day_key for s in ss]
+    trace("day %s: %d show(s)" % (day_key, len(shows)))
+    _add_show_items(shows, with_day=False)
+    xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
+
+
+def list_programs() -> None:
+    xbmcplugin.setPluginCategory(HANDLE, "Programs")
+    xbmcplugin.setContent(HANDLE, "albums")
+    reps = kexpdata.unique_programs(kexpdata.fetch_shows())
+    trace("programs: %d" % len(reps))
+    for s in reps:
+        li = xbmcgui.ListItem(label=str(s.get("program_name") or "?"))
+        art = str(s.get("program_image_uri") or "")
+        if art:
+            li.setArt({"thumb": art, "icon": art})
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url(action="program", id=str(s.get("program"))),
+            li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
+
+
+def list_program(program_id: str) -> None:
+    shows = [s for s in kexpdata.fetch_shows()
+             if str(s.get("program")) == program_id]
+    name = str(shows[0].get("program_name")) if shows else "Program"
+    xbmcplugin.setPluginCategory(HANDLE, name)
+    xbmcplugin.setContent(HANDLE, "albums")
+    trace("program %s: %d show(s)" % (program_id, len(shows)))
+    _add_show_items(shows, with_day=True)
+    xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
+
+
+def list_hosts() -> None:
+    xbmcplugin.setPluginCategory(HANDLE, "Hosts")
+    shows = kexpdata.fetch_shows()
+    hosts = kexpdata.unique_hosts(shows)
+    trace("hosts: %d" % len(hosts))
+    for hid, hname in hosts:
+        li = xbmcgui.ListItem(label=hname)
+        # Use the newest show image for this host as the thumb.
+        art = next((str(s.get("image_uri") or "") for s in shows
+                    if isinstance(s.get("hosts"), list)
+                    and hid in s["hosts"] and s.get("image_uri")), "")
+        if art:
+            li.setArt({"thumb": art, "icon": art})
+        xbmcplugin.addDirectoryItem(
+            HANDLE, build_url(action="host", id=str(hid)), li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
+
+
+def list_host(host_id: str) -> None:
+    try:
+        hid = int(host_id)
+    except ValueError:
+        hid = -1
+    shows = [s for s in kexpdata.fetch_shows()
+             if isinstance(s.get("hosts"), list) and hid in s["hosts"]]
+    name = "Host"
+    if shows:
+        ids: Any = shows[0].get("hosts")
+        names: Any = shows[0].get("host_names")
+        if isinstance(ids, list) and isinstance(names, list) and hid in ids:
+            name = str(names[ids.index(hid)])
+    xbmcplugin.setPluginCategory(HANDLE, name)
+    xbmcplugin.setContent(HANDLE, "albums")
+    trace("host %s: %d show(s)" % (host_id, len(shows)))
+    _add_show_items(shows, with_day=True)
+    xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
+
+
+# --- archive playback (resolve at play time) --------------------------------
+
+def play_archive(params: dict[str, str]) -> None:
+    start: str = params.get("start", "")
+    label: str = params.get("label", "KEXP archive")
+    art: str = params.get("art", "")
+    if not start:
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+        return
+    info = kexpdata.resolve_stream(start, bitrate_setting())
+    if info is None:
+        notify("Could not resolve the archive stream (see log)", error=True)
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+        return
+
+    offset: int = 0
+    try:
+        offset = int(info.get("sg-offset") or 0)
+    except (TypeError, ValueError):
+        pass
+    # Broadcast moment of the FILE's first byte: what the service needs
+    # to map playback position -> airdate for synced metadata.
+    file_start_epoch: float = 0.0
+    try:
+        file_start_epoch = float(params.get("start_epoch", "")) - offset
+    except ValueError:
+        dt = kexpdata.parse_iso(start)
+        if dt is not None:
+            file_start_epoch = dt.timestamp() - offset
+
+    kexpdata.write_session({
+        "sg_url": str(info.get("sg-url") or ""),
+        "sg_url_next": str(info.get("sg-url-next") or ""),
+        "offset": offset,
+        "requested": start,
+        "file_start_epoch": file_start_epoch,
+        "show_label": label,
+        "art": art,
+    })
+
+    li = xbmcgui.ListItem(path=str(info["sg-url"]))
+    tag = li.getMusicInfoTag()
+    tag.setTitle(label)
+    tag.setArtist("KEXP archive")
+    if art:
+        li.setArt({"thumb": art, "icon": art})
+    li.setProperty(ITEM_PROP_MODE, "archive")
+    # Skip Kodi's content probe: we know it's MP3, and a probe would
+    # spend an extra AIS listening session for nothing.
+    li.setMimeType("audio/mpeg")
+    li.setContentLookup(False)
+    trace("resolved archive play: %s (offset %ds)" % (label, offset))
+    xbmcplugin.setResolvedUrl(HANDLE, True, li)
+
+
+# --- router -----------------------------------------------------------------
+
+def router(paramstring: str) -> None:
+    trace("router: argv=%r" % (sys.argv,))
+    params: dict[str, str] = dict(urllib.parse.parse_qsl(paramstring))
+    action: str | None = params.get("action")
+
+    if action is None:
+        list_root()
+    elif action == "days":
+        list_days()
+    elif action == "day":
+        list_day(params.get("date", ""))
+    elif action == "programs":
+        list_programs()
+    elif action == "program":
+        list_program(params.get("id", ""))
+    elif action == "hosts":
+        list_hosts()
+    elif action == "host":
+        list_host(params.get("id", ""))
+    elif action == "play":
+        play_archive(params)
+    else:
+        xbmc.log("%s: unknown action %s" % (ADDON_ID, action), xbmc.LOGWARNING)
+        xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
+
+
+if __name__ == "__main__":
+    router(sys.argv[2][1:])

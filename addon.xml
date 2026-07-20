@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.audio.kexp"
+       name="KEXP"
+       version="0.0.2"
+       provider-name="srhamil">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0"/>
+    </requires>
+    <extension point="xbmc.python.pluginsource" library="default.py">
+        <provides>audio</provides>
+    </extension>
+    <extension point="xbmc.python.module" library="resources/lib"/>
+    <extension point="xbmc.service" library="service.py"/>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">KEXP 90.3 Seattle: live stream and two-week archive</summary>
+        <description lang="en_GB">PROTOTYPE. Listen to KEXP live or browse the public two-week archive by day, program, or host, with synchronized now-playing metadata replayed from KEXP's playlist API during archive playback. Uses KEXP's public (undocumented) API; personal use, be kind to it, and consider donating to KEXP.</description>
+        <license>GPL-3.0-or-later</license>
+        <platform>all</platform>
+        <news>v0.0.1: initial prototype -- live + archive browse (by day / program / host), play-time stream resolution, jump-into-show seek, synced archive metadata with tag defense.</news>
+        <assets>
+            <icon>icon.png</icon>
+        </assets>
+    </extension>
+</addon>

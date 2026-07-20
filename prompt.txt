@@ -1,0 +1,125 @@
+PROJECT BOOTSTRAP PROMPT -- plugin.audio.kexp ("KEXP app")
+Last updated: 2026-07-20. Owner: Simon. Purpose: paste into a fresh
+conversation to restore full working context for this project.
+
+================================================================================
+1. WHAT THIS IS
+================================================================================
+Kodi audio add-on (plugin.audio.kexp, v0.0.1 PROTOTYPE, provider
+srhamil, GPL-3.0-or-later): KEXP 90.3 Seattle live stream + the
+station's public TWO-WEEK ARCHIVE, browsable by day / program / host,
+with now-playing metadata REPLAYED IN SYNC during archive playback.
+Companion reference: kexp-archive-api.md (the reverse-engineered API
+map, curl-verified 2026-07-19/20) -- read it alongside this.
+
+Origin: spun out of plugin.audio.internetradio (which keeps its own
+live-KEXP station). Built by porting that add-on's validated
+architecture; it is the parent design. Same target environment as all
+of Simon's audio add-ons: RPi4 + DAC appliance, Kodi 21 Omega on
+LibreELEC, Aeon Nox SiLVO, Bravia/CEC, stdlib only. Same owner
+workflow rules: design discussion before code, complete
+compile-checked file deliverables, type hints, new-format settings.xml
++ strings.po, log prefixes [plugin.audio.kexp/plugin|/service|/data],
+verbose INFO during shakedown then LOGDEBUG.
+
+STATUS: v0.0.1 generated 2026-07-20 as a no-further-input prototype at
+Simon's request (design-discussion rule explicitly waived for this
+round). NOT YET RUN ON DEVICE. Simon's tree becomes source of truth
+the moment he touches it.
+
+================================================================================
+2. ARCHITECTURE
+================================================================================
+* default.py -- plugin/router. Root: "Listen live" (stream URL as item
+  path, property kexp_mode=live -- the internetradio pattern
+  unchanged) + folders Shows by day / Programs / Hosts. Show listings
+  use setContent("albums") (view-mode lesson from internetradio).
+  ARCHIVE PLAYBACK RESOLVES AT PLAY TIME via setResolvedUrl -- the
+  family's first deliberate departure from the no-resolve-handler
+  rule, for API frugality (each URL costs a get_streaming_url call;
+  resolving at listing time would burn 6-8 per folder). The resolved
+  item gets kexp_mode=archive, setMimeType("audio/mpeg") +
+  setContentLookup(False) (skip Kodi's probe = no wasted AIS session).
+* resources/lib/kexpdata.py -- data layer: get_json (GET only; the
+  API 405s HEAD), fetch_shows() (paginates /v2/shows/?ordering=
+  -start_time&limit=100 until results age past 14 days, max 12 pages,
+  15-min disk cache in profile/shows_cache.json), group_by_day /
+  unique_programs / unique_hosts (client-side slicing of the one
+  cached list -- avoids unverified server filter params entirely),
+  resolve_stream() (get_streaming_url wrapper), write_session/
+  read_session (profile/archive_session.json plugin->service handoff).
+* service.py -- background service, 2s tick. BaseHandler carries TAG
+  DEFENSE (internetradio's hard-won lesson: Kodi's ICY handling stomps
+  updateInfoTag pushes; compare MusicPlayer.Title/Album InfoLabels vs
+  last-pushed each tick, re-push on drift; push_tag builds on
+  getPlayingItem() and sets album unconditionally so empty clears).
+  - LiveHandler: port of internetradio's field-validated KexpHandler
+    (plays/?limit=1, show-label cache, airbreak handling), minus
+    history.
+  - ArchiveHandler: the new trick. Session handoff gives sg_url,
+    offset (sg-offset), file_start_epoch (= requested start - offset),
+    show_label, art. One-shot seekTime(offset) executed from the
+    service tick once getTotalTime()>0 (seeking inside onAVStarted is
+    flaky; gives up to 0:00 after ~40s with a warning). Then every
+    archive_poll seconds: broadcast moment = file_start_epoch +
+    player.getTime(); query /v2/plays/?limit=1&ordering=-airdate&
+    airdate_before=<moment UTC Z>; SANITY CHECK the returned airdate
+    (must be <= moment and within 3h) -- if it fails, the filter is
+    unsupported and we fall back to show-identity display with a loud
+    log line instead of showing live metadata as archive metadata.
+  - RadioPlayer._identify(): kexp_mode item property first; fallback
+    matches getPlayingFile() against LIVE_STREAM_URL or the session
+    file's sg_url (compared session-less, pre-'?', because the AIS
+    redirect appends listeningSessionID). Log records which path won
+    -- this answers the does-setResolvedUrl-preserve-properties
+    question on first device run.
+* Settings: live_poll (5-120s, def 20), archive_poll (5-60s, def 10),
+  bitrate (64/128/256, def 128; label says effect unverified).
+* Icon: generated placeholder (deliberately not the KEXP logo).
+
+================================================================================
+3. KEY API FACTS (full detail in kexp-archive-api.md)
+================================================================================
+get_streaming_url/?bitrate=N&timestamp=ISO -> {sg-url, sg-url-next,
+sg-offset}. One MP3 file per show; files start ~10 min before the
+nominal hour -- NEVER schedule math, always sg-offset. URLs stable/
+deterministic/unsigned. StreamGuys host = AIS server, 302-wraps a
+listeningSessionID (Kodi follows natively; never cache session URLs).
+Files: audio/mpeg, Accept-Ranges bytes (native seeking), ~135 kbps for
+bitrate=128. v2 shows carry start_time + program/host names + artwork;
+no end_time (show N ends at show N+1's start). Plays are published
+first, annotated later (comment arrives late -- internetradio lesson).
+
+================================================================================
+4. STATUS + OPEN ITEMS (2026-07-20, v0.0.1, pre-device)
+================================================================================
+Compile-checked; data-layer logic smoke-tested off-device (pagination,
+window filter, cache, grouping, dedup, session round-trip). ZERO
+device validation yet. First-shakedown watch list, in order:
+  1. Does the plugin list and play at all (live, then archive).
+  2. Which _identify() path wins for archive (property vs session
+     file) -- log line answers the setResolvedUrl-properties question.
+  3. Does the one-shot seek land (log: "seeking to offset ...s").
+  4. Does /v2/plays/ airdate_before work (absence of the "filter looks
+     unsupported" warning) -- THE load-bearing unverified API fact.
+  5. Does /v2/shows/ honor ordering=-start_time (a "first page
+     entirely outside the archive window" warning means no).
+  6. Do archive MP3 files trigger ICY tag stomps ("tag stomped" lines;
+     defense is inherited either way).
+Deliberately NOT in the prototype: sg-url-next continuation chaining
+(hook marked in onPlayBackEnded); listening history (open design
+question); background/fanart; bitrate variant verification (64 vs 256
+sg-url comparison decides if the setting stays).
+
+================================================================================
+5. RELATED CONTEXT
+================================================================================
+Siblings: plugin.audio.internetradio (parent architecture; keeps live
+KEXP; its prompt.txt documents the ICY piggyback, tag defense, and
+getPlayingItem lessons this inherits), plugin.audio.pandora,
+screensaver.sonyscreenoff (its README documents the box-wide
+advancedsettings.xml songinfoduration=86400 fix -- REQUIRED on the
+appliance or fullscreen music blacks out after 10s; already deployed
+on Simon's box). Etiquette: personal use of an undocumented public
+API; cache, resolve lazily, honest User-Agent, let AIS sessions work
+(royalty reporting), donate to KEXP.

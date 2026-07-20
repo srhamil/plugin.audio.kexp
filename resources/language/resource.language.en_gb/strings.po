@@ -1,0 +1,25 @@
+# Kodi Media Center language file
+# Addon Name: KEXP
+# Addon id: plugin.audio.kexp
+msgid ""
+msgstr ""
+"Project-Id-Version: plugin.audio.kexp\n"
+"Language: en_GB\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgctxt "#32000"
+msgid "General"
+msgstr ""
+
+msgctxt "#32001"
+msgid "Live now-playing poll interval (seconds)"
+msgstr ""
+
+msgctxt "#32002"
+msgid "Archive metadata sync interval (seconds)"
+msgstr ""
+
+msgctxt "#32003"
+msgid "Archive bitrate (effect unverified; the API treats it as a preference)"
+msgstr ""
