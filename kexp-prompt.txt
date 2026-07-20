@@ -1,11 +1,11 @@
 PROJECT BOOTSTRAP PROMPT -- plugin.audio.kexp ("KEXP app")
-Last updated: 2026-07-20. Owner: Simon. Purpose: paste into a fresh
+Last updated: 2026-07-20 (v0.0.2). Owner: Simon. Purpose: paste into a fresh
 conversation to restore full working context for this project.
 
 ================================================================================
 1. WHAT THIS IS
 ================================================================================
-Kodi audio add-on (plugin.audio.kexp, v0.0.1 PROTOTYPE, provider
+Kodi audio add-on (plugin.audio.kexp, v0.0.2 PROTOTYPE, provider
 srhamil, GPL-3.0-or-later): KEXP 90.3 Seattle live stream + the
 station's public TWO-WEEK ARCHIVE, browsable by day / program / host,
 with now-playing metadata REPLAYED IN SYNC during archive playback.
@@ -23,17 +23,33 @@ compile-checked file deliverables, type hints, new-format settings.xml
 verbose INFO during shakedown then LOGDEBUG.
 
 STATUS: v0.0.1 generated 2026-07-20 as a no-further-input prototype at
-Simon's request (design-discussion rule explicitly waived for this
-round). NOT YET RUN ON DEVICE. Simon's tree becomes source of truth
-the moment he touches it.
+Simon's request (design-discussion rule explicitly waived for that
+round). v0.0.2 followed the same day after the first device test:
+findings #1-#5 below fixed in one pass, compile-checked + logic
+smoke-tested off-device. BROWSING partially device-tested (shows list
+built; see #1). ARCHIVE PLAY/SEEK and the /v2/plays airdate sync are
+STILL UNPROVEN ON DEVICE -- the first test crashed on browse before
+reaching playback. Simon's tree becomes source of truth the moment he
+touches it.
 
 ================================================================================
 2. ARCHITECTURE
 ================================================================================
 * default.py -- plugin/router. Root: "Listen live" (stream URL as item
   path, property kexp_mode=live -- the internetradio pattern
-  unchanged) + folders Shows by day / Programs / Hosts. Show listings
-  use setContent("albums") (view-mode lesson from internetradio).
+  unchanged) + folders Shows by day / Programs / DJs (user-facing
+  "DJs"; code/API/action strings stay "host*" to match KEXP's own
+  vocabulary). ALL folder listings use setContent("albums") (view-mode
+  lesson from internetradio) so SiLVO offers wall/grid views. Shows-by-
+  day cells carry a generated SVG date-card thumb (kexpdata.date_tile:
+  orange KEXP header, big day numeral, weekday; cached per date in
+  profile/date_tiles/; Kodi renders SVG art natively, no image lib on
+  device) so the wall reads as a date grid like the web page. DJ cells
+  use the DJ's photo (image_uri) as thumb + their most-frequent program
+  as label2 (via setAlbum/setArtist). Show-row labels are context-
+  trimmed: day folder = "HH:MM Program with DJ"; program folder =
+  "Wkd Mon DD  HH:MM  with DJ"; DJ folder = "Wkd Mon DD  HH:MM
+  Program". The player info-tag title always keeps the full show name.
   ARCHIVE PLAYBACK RESOLVES AT PLAY TIME via setResolvedUrl -- the
   family's first deliberate departure from the no-resolve-handler
   rule, for API frugality (each URL costs a get_streaming_url call;
@@ -47,7 +63,12 @@ the moment he touches it.
   unique_programs / unique_hosts (client-side slicing of the one
   cached list -- avoids unverified server filter params entirely),
   resolve_stream() (get_streaming_url wrapper), write_session/
-  read_session (profile/archive_session.json plugin->service handoff).
+  read_session (profile/archive_session.json plugin->service handoff),
+  date_tile() (cached SVG date cards). NOTE: default.py parses its own
+  YYYY-MM-DD day keys via a manual int-split, NOT datetime.strptime --
+  strptime lazily imports _strptime and Kodi's per-invocation
+  interpreter can leave that reference dead (datetime.strptime -> None),
+  which crashed v0.0.1 browse (finding #1). Never use strptime in Kodi.
 * service.py -- background service, 2s tick. BaseHandler carries TAG
   DEFENSE (internetradio's hard-won lesson: Kodi's ICY handling stomps
   updateInfoTag pushes; compare MusicPlayer.Title/Album InfoLabels vs
@@ -91,25 +112,45 @@ no end_time (show N ends at show N+1's start). Plays are published
 first, annotated later (comment arrives late -- internetradio lesson).
 
 ================================================================================
-4. STATUS + OPEN ITEMS (2026-07-20, v0.0.1, pre-device)
+4. STATUS + OPEN ITEMS (2026-07-20, v0.0.2)
 ================================================================================
-Compile-checked; data-layer logic smoke-tested off-device (pagination,
-window filter, cache, grouping, dedup, session round-trip). ZERO
-device validation yet. First-shakedown watch list, in order:
-  1. Does the plugin list and play at all (live, then archive).
-  2. Which _identify() path wins for archive (property vs session
-     file) -- log line answers the setResolvedUrl-properties question.
-  3. Does the one-shot seek land (log: "seeking to offset ...s").
-  4. Does /v2/plays/ airdate_before work (absence of the "filter looks
-     unsupported" warning) -- THE load-bearing unverified API fact.
-  5. Does /v2/shows/ honor ordering=-start_time (a "first page
-     entirely outside the archive window" warning means no).
-  6. Do archive MP3 files trigger ICY tag stomps ("tag stomped" lines;
-     defense is inherited either way).
-Deliberately NOT in the prototype: sg-url-next continuation chaining
-(hook marked in onPlayBackEnded); listening history (open design
-question); background/fanart; bitrate variant verification (64 vs 256
-sg-url comparison decides if the setting stays).
+FINDINGS FIXED in v0.0.2 (first device test -> one patch pass):
+  #1 datetime.strptime is None in Kodi (lazy _strptime import dies with
+     the interpreter) -> crashed all day browsing. Fixed: manual
+     int-split parse. VERIFIED from the log that ordering=-start_time IS
+     honored (3 pages, 120 shows, clean window stop) -- watch item #5
+     below now CONFIRMED.
+  #2 sliced listings showed weekday+time only (ambiguous over 14 days)
+     -> full "Wkd Mon DD  HH:MM" in program/DJ folders, context-trimmed
+     (drop the folder's own dimension: program name in DJ folders, DJ
+     in program folders).
+  #3 "Hosts" reads as servers to a sysadmin -> user-facing "DJs".
+  #4 Shows-by-day now a date-tile grid (generated SVG cards + albums
+     content). Web page has NO week structure (just flows cells), so we
+     match that -- no weekday-column alignment needed.
+  #5 DJs now a photo-tile grid (DJ photo + most-frequent program text).
+
+STILL UNPROVEN ON DEVICE (next test session, in priority order):
+  A. Archive PLAY works at all (setResolvedUrl -> AIS 302 -> Kodi).
+  B. Which _identify() path wins for archive (item property vs session
+     file) -- the log line answers does-setResolvedUrl-keep-properties.
+  C. Does the one-shot seek land ("seeking to offset ...s").
+  D. Does /v2/plays/?airdate_before work -- THE load-bearing unverified
+     API fact (absence of "filter looks unsupported" warning = good).
+  E. Do archive MP3s trigger ICY tag stomps ("tag stomped" lines).
+  F. Do the new wall/grid views actually appear in SiLVO (view choice
+     is remembered per-path; a plain list = one-time Choose View, not a
+     bug).
+
+DEFERRED (explicit): SCHEDULE PAGE -- KEXP web has one; Simon wants it
+eventually but it's deferred as likely more complex (forward-projected
+v2 shows / grid schedule rather than the archive's backward window);
+revisit after the v0.0.x prototype findings settle. Also deferred:
+sg-url-next continuation chaining (hook marked in onPlayBackEnded);
+listening history (open design question -- whether archive playback
+records history and where); background/fanart; bitrate variant
+verification (64 vs 256 sg-url comparison decides if the setting
+stays).
 
 ================================================================================
 5. RELATED CONTEXT

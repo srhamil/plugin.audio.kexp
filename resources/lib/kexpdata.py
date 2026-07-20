@@ -274,3 +274,62 @@ def read_session() -> dict[str, Any] | None:
         return data if isinstance(data, dict) else None
     except (OSError, json.JSONDecodeError):
         return None
+
+
+# --- date-card tiles (Shows-by-day grid) -----------------------------------
+# The KEXP web page lays out days as a grid of date cells (month / big day
+# numeral / weekday). A Kodi directory can't grid itself, but SiLVO's wall
+# view will, IF each cell has distinct art -- otherwise every day shows the
+# same placeholder icon and the wall reads as uniform mush. So we generate
+# a small SVG date card per date, cached in the profile, and hand it back
+# as the item thumb. Kodi renders SVG art natively; string-formatted here,
+# no image library needed on-device.
+
+TILES_DIR: str = os.path.join(PROFILE, "date_tiles")
+_ACCENT = "#e87722"   # KEXP orange
+_BG = "#18181c"
+_FG = "#f0f0f0"
+_MUTED = "#9a9a9a"
+
+_TILE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+<rect width="400" height="400" fill="{bg}"/>
+<rect x="0" y="0" width="400" height="70" fill="{accent}"/>
+<text x="200" y="52" font-family="sans-serif" font-size="40" font-weight="bold" fill="{bg}" text-anchor="middle">{month}</text>
+<text x="200" y="255" font-family="sans-serif" font-size="180" font-weight="bold" fill="{fg}" text-anchor="middle">{day}</text>
+<text x="200" y="335" font-family="sans-serif" font-size="52" fill="{muted}" text-anchor="middle">{weekday}</text>
+</svg>
+"""
+
+
+def date_tile(day_key: str) -> str:
+    """Path to a cached SVG date card for a 'YYYY-MM-DD' key ('' on error).
+
+    Cards are immutable per date, so a present file is reused as-is; the
+    directory doubles as the cache. Filenames are the date key, which is
+    already filesystem-safe.
+    """
+    parts = day_key.split("-")
+    if len(parts) != 3:
+        return ""
+    try:
+        y, m, d = (int(p) for p in parts)
+        from datetime import date as _date
+        dow = _date(y, m, d).strftime("%a").upper()
+        month = _date(y, m, d).strftime("%b").upper()
+    except (ValueError, TypeError):
+        return ""
+    path = os.path.join(TILES_DIR, f"{day_key}.svg")
+    if os.path.exists(path):
+        return path
+    try:
+        os.makedirs(TILES_DIR, exist_ok=True)
+        svg = _TILE_SVG.format(bg=_BG, accent=_ACCENT, fg=_FG, muted=_MUTED,
+                               month=month, day=d, weekday=dow)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(svg)
+        os.replace(tmp, path)
+        return path
+    except OSError as e:
+        log(f"date tile write failed for {day_key}: {e}", xbmc.LOGWARNING)
+        return ""

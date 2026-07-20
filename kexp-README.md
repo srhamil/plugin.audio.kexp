@@ -5,9 +5,10 @@ KEXP 90.3 Seattle in Kodi: the live stream plus the station's public
 now-playing metadata **replayed in sync** during archive playback, so
 the OSD shows what was actually airing at that moment of the broadcast.
 
-Status: v0.0.1, quick-and-dirty prototype, diagnostic (verbose INFO)
+Status: v0.0.2, quick-and-dirty prototype, diagnostic (verbose INFO)
 logging throughout. Built from plugin.audio.internetradio's validated
-architecture. Companion document: `kexp-archive-api.md` — the
+architecture. Browsing is device-tested; archive playback is not yet
+(see caveats). Companion document: `kexp-archive-api.md` — the
 reverse-engineered API reference this is built on.
 
 ## What it does
@@ -16,9 +17,10 @@ reverse-engineered API reference this is built on.
   service polls the KEXP API for artist/title/album/cover art and the
   current show ("Variety Mix with Morgan"), exactly as the
   internetradio add-on's KEXP station does.
-* **Shows by day** — the last 14 days as folders, each listing that
-  day's broadcast shows with program artwork.
-* **Programs / Hosts** — the same two weeks sliced by program or DJ.
+* **Shows by day** — the last 14 days as a grid of date-card tiles,
+  each opening to that day's shows with program artwork.
+* **Programs / DJs** — the same two weeks sliced by program or DJ; the
+  DJs folder is a grid of DJ photos labelled with each DJ's show.
 * Selecting a show resolves the archive audio **at play time** (one
   API call), starts playback at the show's beginning, and the service
   replays the playlist metadata synchronized to the playback position.
@@ -57,6 +59,9 @@ project for that saga).
   session handoff file covers the gap and the log records which
   identification path won.
 * Placeholder icon (deliberately not the KEXP logo).
+* Which SiLVO wall/grid view the tile folders open in is remembered
+  per-path by Kodi; if a folder opens as a plain list, pick a wall
+  view once via Choose View — it isn't a bug.
 
 ## Etiquette
 

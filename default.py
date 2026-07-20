@@ -6,7 +6,7 @@ Browse tree:
     Listen live
     Shows by day  -> date folders -> shows
     Programs      -> program folders -> that program's shows
-    Hosts         -> host folders -> that host's shows
+    DJs           -> DJ folders -> that DJ's shows
 
 Architecture notes (vs plugin.audio.internetradio, the parent design):
 
@@ -85,20 +85,33 @@ def list_root() -> None:
 
     for label, action in (("Shows by day", "days"),
                           ("Programs", "programs"),
-                          ("Hosts", "hosts")):
+                          ("DJs", "hosts")):
         li = xbmcgui.ListItem(label=label)
         xbmcplugin.addDirectoryItem(
             HANDLE, build_url(action=action), li, isFolder=True)
     xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
 
 
+def _parse_day_key(day_key: str) -> datetime | None:
+    """Parse our own 'YYYY-MM-DD' keys WITHOUT datetime.strptime.
+
+    strptime lazily imports the _strptime module on first use, and Kodi's
+    per-invocation interpreter lifecycle can leave that reference dead on
+    later invocations (datetime.strptime becomes None). Since we generate
+    these keys ourselves, a manual split is both bug-proof and cheaper."""
+    try:
+        y, m, d = (int(part) for part in day_key.split("-"))
+        return datetime(y, m, d)
+    except (ValueError, TypeError):
+        return None
+
+
 def _day_label(day_key: str) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     if day_key == today:
         return "Today"
-    try:
-        dt = datetime.strptime(day_key, "%Y-%m-%d")
-    except ValueError:
+    dt = _parse_day_key(day_key)
+    if dt is None:
         return day_key
     yesterday = datetime.fromtimestamp(time.time() - 86400).strftime("%Y-%m-%d")
     if day_key == yesterday:
@@ -108,6 +121,7 @@ def _day_label(day_key: str) -> str:
 
 def list_days() -> None:
     xbmcplugin.setPluginCategory(HANDLE, "Shows by day")
+    xbmcplugin.setContent(HANDLE, "albums")   # unlock the date-tile grid
     shows = kexpdata.fetch_shows()
     days = kexpdata.group_by_day(shows)
     trace("days: %d day(s), %d show(s) total" % (len(days), len(shows)))
@@ -117,18 +131,45 @@ def list_days() -> None:
         li = xbmcgui.ListItem(
             label="%s  [COLOR gray](%d)[/COLOR]"
             % (_day_label(day_key), len(day_shows)))
+        tile = kexpdata.date_tile(day_key)
+        if tile:
+            li.setArt({"thumb": tile, "icon": tile})
         xbmcplugin.addDirectoryItem(
             HANDLE, build_url(action="day", date=day_key), li, isFolder=True)
     xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
 
 
-def show_listitem(show: dict[str, Any], with_day: bool = False) -> xbmcgui.ListItem:
-    label = kexpdata.show_label(show)
+def show_listitem(show: dict[str, Any],
+                  context: str = "day") -> xbmcgui.ListItem:
+    """Build a show row. `context` trims the label to what the folder
+    doesn't already tell the user:
+        "day"     -> "HH:MM  Program with DJ"  (date is the folder)
+        "program" -> "Sat Jul 18  HH:MM  with DJ"  (program is the folder)
+        "dj"      -> "Sat Jul 18  HH:MM  Program"   (DJ is the folder)
+    The info-tag title always keeps the full "Program with DJ" form: the
+    player screen has no folder context to lean on."""
+    full_label = kexpdata.show_label(show)
     local = datetime.fromtimestamp(show["start_epoch"]).astimezone()
-    stamp = local.strftime("%a %H:%M" if with_day else "%H:%M")
-    li = xbmcgui.ListItem(label=f"{stamp}  {label}")
+    program: str = str(show.get("program_name") or "")
+    hosts: Any = show.get("host_names")
+    host_str: str = ", ".join(hosts) if isinstance(hosts, list) else ""
+
+    if context == "day":
+        stamp = local.strftime("%H:%M")
+        text = full_label
+    elif context == "program":
+        stamp = local.strftime("%a %b %d  %H:%M")
+        text = f"with {host_str}" if host_str else full_label
+    elif context == "dj":
+        stamp = local.strftime("%a %b %d  %H:%M")
+        text = program or full_label
+    else:
+        stamp = local.strftime("%a %b %d  %H:%M")
+        text = full_label
+
+    li = xbmcgui.ListItem(label=f"{stamp}  {text}")
     tag = li.getMusicInfoTag()
-    tag.setTitle(label)
+    tag.setTitle(full_label)
     tag.setArtist("KEXP")
     art: str = str(show.get("program_image_uri")
                    or show.get("image_uri") or "")
@@ -141,7 +182,7 @@ def show_listitem(show: dict[str, Any], with_day: bool = False) -> xbmcgui.ListI
     return li
 
 
-def _add_show_items(shows: list[dict[str, Any]], with_day: bool) -> None:
+def _add_show_items(shows: list[dict[str, Any]], context: str) -> None:
     for s in shows:
         # start_time as-is (offset-aware ISO) is what the resolver wants.
         url = build_url(
@@ -151,7 +192,7 @@ def _add_show_items(shows: list[dict[str, Any]], with_day: bool) -> None:
             art=str(s.get("program_image_uri") or s.get("image_uri") or ""),
             start_epoch=str(s["start_epoch"]))
         xbmcplugin.addDirectoryItem(
-            HANDLE, url, show_listitem(s, with_day), isFolder=False)
+            HANDLE, url, show_listitem(s, context), isFolder=False)
 
 
 def list_day(day_key: str) -> None:
@@ -160,7 +201,7 @@ def list_day(day_key: str) -> None:
     shows = [s for k, ss in kexpdata.group_by_day(kexpdata.fetch_shows())
              if k == day_key for s in ss]
     trace("day %s: %d show(s)" % (day_key, len(shows)))
-    _add_show_items(shows, with_day=False)
+    _add_show_items(shows, context="day")
     xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
 
 
@@ -187,21 +228,41 @@ def list_program(program_id: str) -> None:
     xbmcplugin.setPluginCategory(HANDLE, name)
     xbmcplugin.setContent(HANDLE, "albums")
     trace("program %s: %d show(s)" % (program_id, len(shows)))
-    _add_show_items(shows, with_day=True)
+    _add_show_items(shows, context="program")
     xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
 
 
 def list_hosts() -> None:
-    xbmcplugin.setPluginCategory(HANDLE, "Hosts")
+    xbmcplugin.setPluginCategory(HANDLE, "DJs")
+    xbmcplugin.setContent(HANDLE, "albums")   # unlock the photo-tile grid
     shows = kexpdata.fetch_shows()
     hosts = kexpdata.unique_hosts(shows)
-    trace("hosts: %d" % len(hosts))
+    trace("djs: %d" % len(hosts))
     for hid, hname in hosts:
+        dj_shows = [s for s in shows
+                    if isinstance(s.get("hosts"), list) and hid in s["hosts"]]
+        # A DJ may host more than one program across two weeks; label the
+        # tile with their MOST FREQUENT program (newest breaks ties, since
+        # dj_shows is newest-first).
+        freq: dict[str, int] = {}
+        for s in dj_shows:
+            pname = str(s.get("program_name") or "")
+            if pname:
+                freq[pname] = freq.get(pname, 0) + 1
+        program = max(freq, key=lambda p: freq[p]) if freq else ""
+        # Photo tile: newest show image for this DJ.
+        art = next((str(s.get("image_uri") or "") for s in dj_shows
+                    if s.get("image_uri")), "")
+
         li = xbmcgui.ListItem(label=hname)
-        # Use the newest show image for this host as the thumb.
-        art = next((str(s.get("image_uri") or "") for s in shows
-                    if isinstance(s.get("hosts"), list)
-                    and hid in s["hosts"] and s.get("image_uri")), "")
+        tag = li.getMusicInfoTag()
+        tag.setTitle(hname)
+        if program:
+            # Secondary line in grid/wall views (the web page's third
+            # element). setAlbum reliably surfaces as label2 in music
+            # 'albums' content, more so than genre/comment across skins.
+            tag.setAlbum(program)
+            tag.setArtist(program)
         if art:
             li.setArt({"thumb": art, "icon": art})
         xbmcplugin.addDirectoryItem(
@@ -216,7 +277,7 @@ def list_host(host_id: str) -> None:
         hid = -1
     shows = [s for s in kexpdata.fetch_shows()
              if isinstance(s.get("hosts"), list) and hid in s["hosts"]]
-    name = "Host"
+    name = "DJ"
     if shows:
         ids: Any = shows[0].get("hosts")
         names: Any = shows[0].get("host_names")
@@ -224,8 +285,8 @@ def list_host(host_id: str) -> None:
             name = str(names[ids.index(hid)])
     xbmcplugin.setPluginCategory(HANDLE, name)
     xbmcplugin.setContent(HANDLE, "albums")
-    trace("host %s: %d show(s)" % (host_id, len(shows)))
-    _add_show_items(shows, with_day=True)
+    trace("dj %s: %d show(s)" % (host_id, len(shows)))
+    _add_show_items(shows, context="dj")
     xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
 
 
