@@ -128,9 +128,14 @@ def list_days() -> None:
     if not days:
         notify("No shows returned from the KEXP API (see log)", error=True)
     for day_key, day_shows in days:
-        li = xbmcgui.ListItem(
-            label="%s  [COLOR gray](%d)[/COLOR]"
-            % (_day_label(day_key), len(day_shows)))
+        label = "%s  [COLOR gray](%d)[/COLOR]" % (
+            _day_label(day_key), len(day_shows))
+        li = xbmcgui.ListItem(label=label)
+        # In setContent("albums") views SiLVO draws the caption from the
+        # music info tag, not the list-item label, so set both.
+        tag = li.getMusicInfoTag()
+        tag.setTitle(_day_label(day_key))
+        tag.setAlbum("%d shows" % len(day_shows))
         tile = kexpdata.date_tile(day_key)
         if tile:
             li.setArt({"thumb": tile, "icon": tile})
@@ -263,8 +268,13 @@ def list_hosts() -> None:
             # 'albums' content, more so than genre/comment across skins.
             tag.setAlbum(program)
             tag.setArtist(program)
-        if art:
-            li.setArt({"thumb": art, "icon": art})
+        # Composite the name+program band onto the photo so the name is
+        # visible even in a text-free poster view; fall back to the bare
+        # photo if there's no image to composite onto.
+        card = kexpdata.dj_card(hid, hname, program, art)
+        thumb = card or art
+        if thumb:
+            li.setArt({"thumb": thumb, "icon": thumb})
         xbmcplugin.addDirectoryItem(
             HANDLE, build_url(action="host", id=str(hid)), li, isFolder=True)
     xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)

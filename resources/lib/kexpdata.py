@@ -333,3 +333,66 @@ def date_tile(day_key: str) -> str:
     except OSError as e:
         log(f"date tile write failed for {day_key}: {e}", xbmc.LOGWARNING)
         return ""
+
+
+# --- DJ photo cards (DJs grid) ---------------------------------------------
+# A skin view may show a poster with no text overlay, which loses the DJ
+# name. To guarantee the name appears regardless of view, we render the
+# name (and program) as a band composited over the DJ photo, via an SVG
+# that references the remote image_uri. Kodi renders SVG (incl. remote
+# <image>) natively. Cached per DJ id; regenerated if the inputs change.
+
+DJ_CARDS_DIR: str = os.path.join(PROFILE, "dj_cards")
+
+
+def _svg_escape(text: str) -> str:
+    return (text.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _fit_text(text: str, limit: int) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "\u2026"
+
+
+_DJ_SVG = """<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="400" height="400" viewBox="0 0 400 400">
+<rect width="400" height="400" fill="{bg}"/>
+<image x="0" y="0" width="400" height="400" preserveAspectRatio="xMidYMid slice" xlink:href="{photo}"/>
+<rect x="0" y="300" width="400" height="100" fill="#000000" fill-opacity="0.62"/>
+<rect x="0" y="300" width="400" height="6" fill="{accent}"/>
+<text x="20" y="345" font-family="sans-serif" font-size="34" font-weight="bold" fill="{fg}">{name}</text>
+<text x="20" y="380" font-family="sans-serif" font-size="24" fill="{muted}">{program}</text>
+</svg>
+"""
+
+
+def dj_card(host_id: int, name: str, program: str, photo: str) -> str:
+    """Path to a cached SVG DJ card (photo + name band). '' if no photo.
+
+    Without a photo there is nothing to composite onto, so callers fall
+    back to using the bare image_uri (or nothing). The cache key folds in
+    name/program/photo so a roster change regenerates the card.
+    """
+    if not photo:
+        return ""
+    import hashlib
+    sig = hashlib.md5(
+        f"{name}|{program}|{photo}".encode("utf-8")).hexdigest()[:8]
+    path = os.path.join(DJ_CARDS_DIR, f"{host_id}_{sig}.svg")
+    if os.path.exists(path):
+        return path
+    try:
+        os.makedirs(DJ_CARDS_DIR, exist_ok=True)
+        svg = _DJ_SVG.format(
+            bg=_BG, accent=_ACCENT, fg=_FG, muted=_MUTED,
+            photo=_svg_escape(photo),
+            name=_svg_escape(_fit_text(name, 20)),
+            program=_svg_escape(_fit_text(program, 26)))
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(svg)
+        os.replace(tmp, path)
+        return path
+    except OSError as e:
+        log(f"dj card write failed for {host_id}: {e}", xbmc.LOGWARNING)
+        return ""
