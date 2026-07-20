@@ -276,123 +276,59 @@ def read_session() -> dict[str, Any] | None:
         return None
 
 
-# --- date-card tiles (Shows-by-day grid) -----------------------------------
-# The KEXP web page lays out days as a grid of date cells (month / big day
-# numeral / weekday). A Kodi directory can't grid itself, but SiLVO's wall
-# view will, IF each cell has distinct art -- otherwise every day shows the
-# same placeholder icon and the wall reads as uniform mush. So we generate
-# a small SVG date card per date, cached in the profile, and hand it back
-# as the item thumb. Kodi renders SVG art natively; string-formatted here,
-# no image library needed on-device.
+# --- day tile (Shows-by-day grid) ------------------------------------------
+# Kodi's runtime image decoder (setArt thumbs) has NO SVG handler on
+# Omega/LibreELEC -- it logs "Could not find suitable input format:
+# image/svg+xml" and renders nothing. So the day grid uses a single solid
+# grey PNG (a format Kodi decodes) as a uniform tile; the DATE lives in the
+# item label, which the albums-content views render beneath the thumb. One
+# shared file, generated once with stdlib only (no image library on device).
 
-TILES_DIR: str = os.path.join(PROFILE, "date_tiles")
-_ACCENT = "#e87722"   # KEXP orange
-_BG = "#18181c"
-_FG = "#f0f0f0"
-_MUTED = "#9a9a9a"
-
-_TILE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
-<rect width="400" height="400" fill="{bg}"/>
-<rect x="0" y="0" width="400" height="70" fill="{accent}"/>
-<text x="200" y="52" font-family="sans-serif" font-size="40" font-weight="bold" fill="{bg}" text-anchor="middle">{month}</text>
-<text x="200" y="255" font-family="sans-serif" font-size="180" font-weight="bold" fill="{fg}" text-anchor="middle">{day}</text>
-<text x="200" y="335" font-family="sans-serif" font-size="52" fill="{muted}" text-anchor="middle">{weekday}</text>
-</svg>
-"""
+TILES_DIR: str = os.path.join(PROFILE, "tiles")
+_GREY_RGB: tuple[int, int, int] = (0x2b, 0x2b, 0x30)
 
 
-def date_tile(day_key: str) -> str:
-    """Path to a cached SVG date card for a 'YYYY-MM-DD' key ('' on error).
+def _solid_png(path: str, rgb: tuple[int, int, int],
+               size: int = 16) -> bool:
+    """Write a tiny solid-colour PNG using only the standard library.
 
-    Cards are immutable per date, so a present file is reused as-is; the
-    directory doubles as the cache. Filenames are the date key, which is
-    already filesystem-safe.
-    """
-    parts = day_key.split("-")
-    if len(parts) != 3:
-        return ""
+    Size is irrelevant (Kodi scales the thumb); 16x16 keeps it a few
+    hundred bytes. PNG = 8-bit RGB, one IDAT of zlib-compressed raw
+    scanlines each prefixed with filter byte 0."""
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+
+    row = b"\x00" + bytes(rgb) * size          # filter byte + RGB pixels
+    raw = row * size
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)  # 8-bit RGB
+    png = (b"\x89PNG\r\n\x1a\n"
+           + chunk(b"IHDR", ihdr)
+           + chunk(b"IDAT", zlib.compress(raw, 9))
+           + chunk(b"IEND", b""))
     try:
-        y, m, d = (int(p) for p in parts)
-        from datetime import date as _date
-        dow = _date(y, m, d).strftime("%a").upper()
-        month = _date(y, m, d).strftime("%b").upper()
-    except (ValueError, TypeError):
-        return ""
-    path = os.path.join(TILES_DIR, f"{day_key}.svg")
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(png)
+        os.replace(tmp, path)
+        return True
+    except OSError as e:
+        log(f"solid PNG write failed ({path}): {e}", xbmc.LOGWARNING)
+        return False
+
+
+def day_tile() -> str:
+    """Path to the shared grey day-tile PNG ('' on error). Generated once."""
+    path = os.path.join(TILES_DIR, "day_grey.png")
     if os.path.exists(path):
         return path
     try:
         os.makedirs(TILES_DIR, exist_ok=True)
-        svg = _TILE_SVG.format(bg=_BG, accent=_ACCENT, fg=_FG, muted=_MUTED,
-                               month=month, day=d, weekday=dow)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(svg)
-        os.replace(tmp, path)
-        return path
     except OSError as e:
-        log(f"date tile write failed for {day_key}: {e}", xbmc.LOGWARNING)
+        log(f"tiles dir create failed: {e}", xbmc.LOGWARNING)
         return ""
+    return path if _solid_png(path, _GREY_RGB) else ""
 
-
-# --- DJ photo cards (DJs grid) ---------------------------------------------
-# A skin view may show a poster with no text overlay, which loses the DJ
-# name. To guarantee the name appears regardless of view, we render the
-# name (and program) as a band composited over the DJ photo, via an SVG
-# that references the remote image_uri. Kodi renders SVG (incl. remote
-# <image>) natively. Cached per DJ id; regenerated if the inputs change.
-
-DJ_CARDS_DIR: str = os.path.join(PROFILE, "dj_cards")
-
-
-def _svg_escape(text: str) -> str:
-    return (text.replace("&", "&amp;").replace("<", "&lt;")
-            .replace(">", "&gt;").replace('"', "&quot;"))
-
-
-def _fit_text(text: str, limit: int) -> str:
-    text = text.strip()
-    return text if len(text) <= limit else text[:limit - 1].rstrip() + "\u2026"
-
-
-_DJ_SVG = """<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="400" height="400" viewBox="0 0 400 400">
-<rect width="400" height="400" fill="{bg}"/>
-<image x="0" y="0" width="400" height="400" preserveAspectRatio="xMidYMid slice" xlink:href="{photo}"/>
-<rect x="0" y="300" width="400" height="100" fill="#000000" fill-opacity="0.62"/>
-<rect x="0" y="300" width="400" height="6" fill="{accent}"/>
-<text x="20" y="345" font-family="sans-serif" font-size="34" font-weight="bold" fill="{fg}">{name}</text>
-<text x="20" y="380" font-family="sans-serif" font-size="24" fill="{muted}">{program}</text>
-</svg>
-"""
-
-
-def dj_card(host_id: int, name: str, program: str, photo: str) -> str:
-    """Path to a cached SVG DJ card (photo + name band). '' if no photo.
-
-    Without a photo there is nothing to composite onto, so callers fall
-    back to using the bare image_uri (or nothing). The cache key folds in
-    name/program/photo so a roster change regenerates the card.
-    """
-    if not photo:
-        return ""
-    import hashlib
-    sig = hashlib.md5(
-        f"{name}|{program}|{photo}".encode("utf-8")).hexdigest()[:8]
-    path = os.path.join(DJ_CARDS_DIR, f"{host_id}_{sig}.svg")
-    if os.path.exists(path):
-        return path
-    try:
-        os.makedirs(DJ_CARDS_DIR, exist_ok=True)
-        svg = _DJ_SVG.format(
-            bg=_BG, accent=_ACCENT, fg=_FG, muted=_MUTED,
-            photo=_svg_escape(photo),
-            name=_svg_escape(_fit_text(name, 20)),
-            program=_svg_escape(_fit_text(program, 26)))
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(svg)
-        os.replace(tmp, path)
-        return path
-    except OSError as e:
-        log(f"dj card write failed for {host_id}: {e}", xbmc.LOGWARNING)
-        return ""

@@ -136,7 +136,7 @@ def list_days() -> None:
         tag = li.getMusicInfoTag()
         tag.setTitle(_day_label(day_key))
         tag.setAlbum("%d shows" % len(day_shows))
-        tile = kexpdata.date_tile(day_key)
+        tile = kexpdata.day_tile()
         if tile:
             li.setArt({"thumb": tile, "icon": tile})
         xbmcplugin.addDirectoryItem(
@@ -268,13 +268,12 @@ def list_hosts() -> None:
             # 'albums' content, more so than genre/comment across skins.
             tag.setAlbum(program)
             tag.setArtist(program)
-        # Composite the name+program band onto the photo so the name is
-        # visible even in a text-free poster view; fall back to the bare
-        # photo if there's no image to composite onto.
-        card = kexpdata.dj_card(hid, hname, program, art)
-        thumb = card or art
-        if thumb:
-            li.setArt({"thumb": thumb, "icon": thumb})
+        # Bare photo as thumb (Kodi decodes JPEG/PNG; it has no SVG
+        # decoder for runtime art, so composited name-cards are out). The
+        # name is the item label and the info-tag title; the program is
+        # label2 via setAlbum -- a text-showing wall view renders both.
+        if art:
+            li.setArt({"thumb": art, "icon": art})
         xbmcplugin.addDirectoryItem(
             HANDLE, build_url(action="host", id=str(hid)), li, isFolder=True)
     xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)
