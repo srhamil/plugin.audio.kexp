@@ -278,36 +278,129 @@ def read_session() -> dict[str, Any] | None:
 
 # --- day tile (Shows-by-day grid) ------------------------------------------
 # Kodi's runtime image decoder (setArt thumbs) has NO SVG handler on
-# Omega/LibreELEC -- it logs "Could not find suitable input format:
-# image/svg+xml" and renders nothing. So the day grid uses a single solid
-# grey PNG (a format Kodi decodes) as a uniform tile; the DATE lives in the
-# item label, which the albums-content views render beneath the thumb. One
-# shared file, generated once with stdlib only (no image library on device).
+# Omega/LibreELEC ("Could not find suitable input format: image/svg+xml").
+# It DOES decode PNG. But there is no image/font library in Kodi's Python,
+# so we can't render text on device. Instead we ship pre-rendered PNG strips
+# and composite the three strips (month band / day numeral / weekday band)
+# for a given date by splicing raw scanlines with stdlib only. Authoring the
+# strips once (a human/PIL job) keeps the DEVICE code to pure pixel-copying.
+#
+# i18n: month and weekday names are language-specific, so strips live under
+# resources/media/datestrips/<lang>/ (en-gb is the shipped default). A
+# translator drops in a sibling folder (e.g. de/) with 50 strips + a
+# labels.json and it's picked up when Kodi's UI language matches. Lookup is
+# by ISO-639-1 code (en/de/fr...), with "en" mapping to the en-gb folder and
+# en-gb as the universal fallback.
+#
+# Cache naming: the composite is named by its localized CONTENT, e.g.
+# tile-en-JUL-18-SAT.png -- stable across runs (Kodi's texture cache keys on
+# path, so a stable name is cache-clean) and language-scoped (so switching
+# language can't collide two different images on one name). PNG, not JPEG:
+# these are hard-edged flat-colour text tiles, JPEG's worst case.
 
-TILES_DIR: str = os.path.join(PROFILE, "tiles")
-_GREY_RGB: tuple[int, int, int] = (0x2b, 0x2b, 0x30)
+TILES_DIR: str = os.path.join(PROFILE, "date_tiles")
+STRIPS_ROOT: str = os.path.join(
+    xbmcvfs.translatePath(ADDON.getAddonInfo("path")),
+    "resources", "media", "datestrips")
+DEFAULT_LANG_DIR: str = "en-gb"
 
 
-def _solid_png(path: str, rgb: tuple[int, int, int],
-               size: int = 16) -> bool:
-    """Write a tiny solid-colour PNG using only the standard library.
+def _ui_lang_code() -> str:
+    """Kodi UI language as an ISO-639-1 code (e.g. 'en', 'de'); 'en' on any
+    uncertainty."""
+    try:
+        code = xbmc.getLanguage(xbmc.ISO_639_1, False) or ""
+    except (RuntimeError, TypeError, AttributeError):
+        code = ""
+    code = code.strip().lower()
+    return code or "en"
 
-    Size is irrelevant (Kodi scales the thumb); 16x16 keeps it a few
-    hundred bytes. PNG = 8-bit RGB, one IDAT of zlib-compressed raw
-    scanlines each prefixed with filter byte 0."""
+
+def _lang_dir() -> tuple[str, str]:
+    """(absolute strip folder, lang tag for filenames).
+
+    'en' resolves to the en-gb default folder; any other ISO code is tried
+    as its own folder; missing -> en-gb fallback."""
+    code = _ui_lang_code()
+    candidates = [DEFAULT_LANG_DIR] if code == "en" else [code, DEFAULT_LANG_DIR]
+    for cand in candidates:
+        path = os.path.join(STRIPS_ROOT, cand)
+        if os.path.isdir(path):
+            return path, cand
+    return os.path.join(STRIPS_ROOT, DEFAULT_LANG_DIR), DEFAULT_LANG_DIR
+
+
+def _lang_labels(strip_dir: str) -> dict[str, list[str]]:
+    """months[12] + weekdays[7] localized words for tile filenames; falls
+    back to numeric tokens if labels.json is missing/broken (still unique)."""
+    try:
+        with open(os.path.join(strip_dir, "labels.json"),
+                  "r", encoding="utf-8") as f:
+            data = json.load(f)
+        months = data["months"]
+        weekdays = data["weekdays"]
+        if len(months) == 12 and len(weekdays) == 7:
+            return {"months": [str(x) for x in months],
+                    "weekdays": [str(x) for x in weekdays]}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return {"months": [f"m{i:02d}" for i in range(1, 13)],
+            "weekdays": [f"w{i}" for i in range(7)]}
+
+
+def _read_png_rgb(path: str) -> tuple[int, int, bytes] | None:
+    """Decode a strict 8-bit RGB, non-interlaced PNG to (w, h, raw_scanlines).
+
+    Only handles the exact format our strips are authored in -- not a
+    general decoder. raw_scanlines is the INFLATED stream: h rows each of
+    a 1-byte filter tag + w*3 RGB bytes."""
+    import struct
+    import zlib
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    w = h = 0
+    idat = bytearray()
+    i = 8
+    while i + 12 <= len(data):
+        ln = struct.unpack(">I", data[i:i + 4])[0]
+        tag = data[i + 4:i + 8]
+        body = data[i + 8:i + 8 + ln]
+        if tag == b"IHDR":
+            w, h, depth, ctype = struct.unpack(">IIBB", body[:10])
+            if (depth, ctype, body[12]) != (8, 2, 0):
+                return None
+        elif tag == b"IDAT":
+            idat += body
+        elif tag == b"IEND":
+            break
+        i += 12 + ln
+    if not w or not h:
+        return None
+    try:
+        raw = zlib.decompress(bytes(idat))
+    except zlib.error:
+        return None
+    if len(raw) != h * (1 + w * 3):
+        return None
+    return w, h, raw
+
+
+def _write_png_rgb(path: str, w: int, h: int, raw: bytes) -> bool:
     import struct
     import zlib
 
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        return (struct.pack(">I", len(data)) + tag + data
-                + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+    def chunk(tag: bytes, body: bytes) -> bytes:
+        return (struct.pack(">I", len(body)) + tag + body
+                + struct.pack(">I", zlib.crc32(tag + body) & 0xffffffff))
 
-    row = b"\x00" + bytes(rgb) * size          # filter byte + RGB pixels
-    raw = row * size
-    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)  # 8-bit RGB
     png = (b"\x89PNG\r\n\x1a\n"
-           + chunk(b"IHDR", ihdr)
-           + chunk(b"IDAT", zlib.compress(raw, 9))
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(raw, 6))
            + chunk(b"IEND", b""))
     try:
         tmp = path + ".tmp"
@@ -316,19 +409,68 @@ def _solid_png(path: str, rgb: tuple[int, int, int],
         os.replace(tmp, path)
         return True
     except OSError as e:
-        log(f"solid PNG write failed ({path}): {e}", xbmc.LOGWARNING)
+        log(f"tile PNG write failed ({path}): {e}", xbmc.LOGWARNING)
         return False
 
 
-def day_tile() -> str:
-    """Path to the shared grey day-tile PNG ('' on error). Generated once."""
-    path = os.path.join(TILES_DIR, "day_grey.png")
-    if os.path.exists(path):
-        return path
+def _vstack(paths: list[str], out_path: str) -> bool:
+    decoded = []
+    for p in paths:
+        d = _read_png_rgb(p)
+        if d is None:
+            log(f"date strip unreadable/!RGB8: {p}", xbmc.LOGWARNING)
+            return False
+        decoded.append(d)
+    width = decoded[0][0]
+    if any(w != width for w, _, _ in decoded):
+        log("date strips differ in width; cannot stack", xbmc.LOGWARNING)
+        return False
+    total_h = sum(h for _, h, _ in decoded)
+    combined = bytearray()
+    for _, _, raw in decoded:
+        combined += raw
+    return _write_png_rgb(out_path, width, total_h, bytes(combined))
+
+
+def _safe_token(text: str) -> str:
+    """Filesystem-safe token from a (possibly non-ASCII) label word."""
+    return "".join(c if c.isalnum() else "_" for c in text) or "x"
+
+
+def day_tile(day_key: str) -> str:
+    """Path to a cached calendar date-card PNG for 'YYYY-MM-DD' ('' on error).
+
+    Composited once per date from the current language's month/day/weekday
+    strips; named by localized content for a cache-clean, collision-free
+    path (tile-<lang>-<MON>-<DD>-<WKD>.png)."""
+    parts = day_key.split("-")
+    if len(parts) != 3:
+        return ""
+    try:
+        y, m, d = (int(p) for p in parts)
+        from datetime import date as _date
+        weekday = int(_date(y, m, d).strftime("%w"))   # 0=Sun..6=Sat
+    except (ValueError, TypeError):
+        return ""
+    if not (1 <= m <= 12 and 1 <= d <= 31):
+        return ""
+
+    strip_dir, lang_tag = _lang_dir()
+    labels = _lang_labels(strip_dir)
+    mon_word = _safe_token(labels["months"][m - 1])
+    wkd_word = _safe_token(labels["weekdays"][weekday])
+    name = f"tile-{_safe_token(lang_tag)}-{mon_word}-{d:02d}-{wkd_word}.png"
+    out_path = os.path.join(TILES_DIR, name)
+    if os.path.exists(out_path):
+        return out_path
+
+    strips = [os.path.join(strip_dir, f"month_{m:02d}.png"),
+              os.path.join(strip_dir, f"day_{d:02d}.png"),
+              os.path.join(strip_dir, f"week_{weekday}.png")]
     try:
         os.makedirs(TILES_DIR, exist_ok=True)
     except OSError as e:
-        log(f"tiles dir create failed: {e}", xbmc.LOGWARNING)
+        log(f"date_tiles dir create failed: {e}", xbmc.LOGWARNING)
         return ""
-    return path if _solid_png(path, _GREY_RGB) else ""
+    return out_path if _vstack(strips, out_path) else ""
 

@@ -136,7 +136,7 @@ def list_days() -> None:
         tag = li.getMusicInfoTag()
         tag.setTitle(_day_label(day_key))
         tag.setAlbum("%d shows" % len(day_shows))
-        tile = kexpdata.day_tile()
+        tile = kexpdata.day_tile(day_key)
         if tile:
             li.setArt({"thumb": tile, "icon": tile})
         xbmcplugin.addDirectoryItem(
