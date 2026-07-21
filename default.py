@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-plugin.audio.kexp -- KEXP live + 2-week archive browser (PROTOTYPE).
+plugin.audio.kexp -- KEXP live + 2-week archive browser (BETA).
 
 Browse tree:
     Listen live
@@ -50,8 +50,10 @@ _T0 = time.time()
 
 
 def trace(msg: str) -> None:
+    # Routine browse/router tracing -- LOGDEBUG for beta so a normal INFO
+    # log isn't flooded while browsing. Enable Kodi debug logging to see.
     xbmc.log("[%s/plugin] (+%6.2fs h=%s) %s"
-             % (ADDON_ID, time.time() - _T0, HANDLE, msg), xbmc.LOGINFO)
+             % (ADDON_ID, time.time() - _T0, HANDLE, msg), xbmc.LOGDEBUG)
 
 
 def build_url(**kwargs: str) -> str:
@@ -205,6 +207,10 @@ def list_day(day_key: str) -> None:
     xbmcplugin.setContent(HANDLE, "albums")   # unlock icon/wall views
     shows = [s for k, ss in kexpdata.group_by_day(kexpdata.fetch_shows())
              if k == day_key for s in ss]
+    # A single day reads naturally morning -> night, so within the day we
+    # sort ASCENDING by start time. (Program/DJ "episode" lists stay
+    # newest-first, matching KEXP's own per-show ordering.)
+    shows.sort(key=lambda s: s["start_epoch"])
     trace("day %s: %d show(s)" % (day_key, len(shows)))
     _add_show_items(shows, context="day")
     xbmcplugin.endOfDirectory(HANDLE, cacheToDisc=False)

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.audio.kexp"
        name="KEXP"
-       version="0.0.8"
+       version="0.1.0"
        provider-name="srhamil">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -16,7 +16,7 @@
         <description lang="en_GB">PROTOTYPE. Listen to KEXP live or browse the public two-week archive by day, program, or host, with synchronized now-playing metadata replayed from KEXP's playlist API during archive playback. Uses KEXP's public (undocumented) API; personal use, be kind to it, and consider donating to KEXP.</description>
         <license>GPL-3.0-or-later</license>
         <platform>all</platform>
-        <news>v0.0.1: initial prototype -- live + archive browse (by day / program / host), play-time stream resolution, jump-into-show seek, synced archive metadata with tag defense.</news>
+        <news>v0.1.0 (beta): archive playback validated end-to-end on device -- play-time resolution, confirmed seek-to-offset, and time-synced now-playing metadata. Day view sorts earliest-first; date tiles composited from shipped strips. Known limits: no play-through past a show file, no archive history.</news>
         <assets>
             <icon>icon.png</icon>
         </assets>

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Data layer for plugin.audio.kexp (PROTOTYPE).
+Data layer for plugin.audio.kexp (BETA).
 
 Everything network- and cache-shaped lives here, shared by default.py
 (browsing/resolving) and service.py (now-playing metadata).
@@ -50,7 +50,7 @@ API_V2: str = "https://api.kexp.org/v2"
 RESOLVER: str = "https://api.kexp.org/get_streaming_url/"
 # Same live stream the internetradio add-on uses for its KEXP station.
 LIVE_STREAM_URL: str = "https://kexp.streamguys1.com/kexp160.aac"
-USER_AGENT: str = "Kodi plugin.audio.kexp prototype"
+USER_AGENT: str = "Kodi plugin.audio.kexp"
 
 ARCHIVE_DAYS: int = 14          # verified retention window
 SHOWS_CACHE_TTL: float = 900.0  # be polite: reuse the show list for 15 min

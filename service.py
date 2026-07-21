@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Background service for plugin.audio.kexp (PROTOTYPE, DIAGNOSTIC BUILD).
+Background service for plugin.audio.kexp (BETA).
 
 Verbose INFO instrumentation on purpose: this is the add-on's first
 device shakedown. Drop the noisy lines to LOGDEBUG once stable.
@@ -27,7 +27,7 @@ and re-pushes on drift. The live AAC stream definitely carries ICY;
 whether the archive MP3 files do is unknown -- the defense costs nothing
 and the diagnostic log will tell us ("tag stomped" lines).
 
-No listening history in the prototype: whether archive playback should
+No listening history yet: whether archive playback should
 record history (and where) is an open design question.
 """
 from __future__ import annotations
@@ -87,7 +87,7 @@ def push_tag(artist: str, title: str, album: str = "", art: str = "") -> None:
     try:
         player.updateInfoTag(li)
         log(f"  tag pushed: artist={artist!r} title={title!r} album={album!r}"
-            f" art={'yes' if art else 'no'}")
+            f" art={'yes' if art else 'no'}", xbmc.LOGDEBUG)
     except RuntimeError as e:
         log(f"  updateInfoTag failed: {e}", xbmc.LOGWARNING)
 
@@ -367,7 +367,7 @@ class RadioPlayer(xbmc.Player):
         self.handler: BaseHandler | None = None
 
     def onAVStarted(self) -> None:
-        log("onAVStarted fired")
+        log("onAVStarted fired", xbmc.LOGDEBUG)
         mode, how = self._identify()
         if mode == "live":
             self.handler = LiveHandler()
@@ -425,7 +425,7 @@ def run() -> None:
     monitor = xbmc.Monitor()
     player = RadioPlayer()
     kexpdata.ensure_profile()
-    log("=== service started (prototype diagnostic build) ===")
+    log("=== service started (beta) ===")
     log(f"profile: {kexpdata.PROFILE}")
 
     while not monitor.abortRequested():
