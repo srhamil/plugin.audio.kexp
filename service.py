@@ -226,6 +226,7 @@ class ArchiveHandler(BaseHandler):
     """
 
     SEEK_GIVE_UP_TICKS = 20   # ~40s of trying before we play from 0:00
+    SEEK_CONFIRM_TOLERANCE = 15.0   # getTime() within this of offset = landed
 
     def __init__(self, session: dict[str, Any]) -> None:
         super().__init__()
@@ -234,7 +235,13 @@ class ArchiveHandler(BaseHandler):
         self.file_start: float = float(session.get("file_start_epoch") or 0)
         self.show_label: str = str(session.get("show_label") or "KEXP")
         self.show_art: str = str(session.get("art") or "")
-        self.seek_done: bool = self.offset <= 0
+        # Seek has three states: not yet requested, requested (waiting for
+        # getTime() to actually reflect it), confirmed. We only trust the
+        # clock for metadata sync once CONFIRMED -- declaring the seek done
+        # the instant seekTime() is called (before getTime() catches up)
+        # was anchoring every later sync ~30s early.
+        self.seek_requested: bool = self.offset <= 0
+        self.seek_confirmed: bool = self.offset <= 0
         self.seek_ticks: int = 0
         self.next_sync: float = 0.0
         self.last_play_key: str = ""
@@ -244,8 +251,8 @@ class ArchiveHandler(BaseHandler):
 
     def tick(self) -> None:
         player = xbmc.Player()
-        if not self.seek_done:
-            self._try_seek(player)
+        if not self.seek_confirmed:
+            self._drive_seek(player)
             return                      # sync metadata only after the seek
         if self.file_start <= 0:
             return                      # can't map position -> airdate
@@ -260,28 +267,48 @@ class ArchiveHandler(BaseHandler):
         moment: float = self.file_start + position
         self._sync_metadata(moment)
 
-    def _try_seek(self, player: xbmc.Player) -> None:
-        """One-shot seekTime(sg-offset), once the player can seek.
+    def _drive_seek(self, player: xbmc.Player) -> None:
+        """Request the seek once the file is seekable, then wait for
+        getTime() to actually reflect it before declaring it confirmed.
 
-        seekTime immediately inside onAVStarted is flaky, so the seek
-        runs from the service tick instead: wait until getTotalTime()
-        reports a real duration, then seek once.
+        seekTime() inside onAVStarted is flaky, so the seek is driven from
+        the service tick. Critically, getTime() does NOT jump the instant
+        seekTime() returns -- it lags a tick or two. Syncing during that
+        lag reads a stale position and anchors all later metadata early,
+        which showed up as a fixed ~30s offset. So we confirm the landing.
         """
         self.seek_ticks += 1
         try:
             total: float = player.getTotalTime()
         except RuntimeError:
             total = 0.0
-        if total > 0:
-            log(f"seeking to offset {self.offset:.0f}s"
-                f" (file duration {total:.0f}s)")
-            player.seekTime(self.offset)
-            self.seek_done = True
+
+        if not self.seek_requested:
+            if total > 0:
+                log(f"seeking to offset {self.offset:.0f}s"
+                    f" (file duration {total:.0f}s)")
+                player.seekTime(self.offset)
+                self.seek_requested = True
+            elif self.seek_ticks >= self.SEEK_GIVE_UP_TICKS:
+                log("seek: player never became seekable; playing from 0:00",
+                    xbmc.LOGWARNING)
+                self.seek_confirmed = True   # give up; sync from 0:00
             return
-        if self.seek_ticks >= self.SEEK_GIVE_UP_TICKS:
-            log("seek: player never became seekable; playing from 0:00",
-                xbmc.LOGWARNING)
-            self.seek_done = True
+
+        # Seek requested -- wait for the reported position to reach it.
+        try:
+            pos: float = player.getTime()
+        except RuntimeError:
+            pos = 0.0
+        if abs(pos - self.offset) <= self.SEEK_CONFIRM_TOLERANCE:
+            log(f"seek confirmed: position {pos:.0f}s ~= offset"
+                f" {self.offset:.0f}s")
+            self.seek_confirmed = True
+        elif self.seek_ticks >= self.SEEK_GIVE_UP_TICKS:
+            log(f"seek not confirmed after {self.seek_ticks} ticks"
+                f" (position {pos:.0f}s vs offset {self.offset:.0f}s);"
+                f" proceeding anyway", xbmc.LOGWARNING)
+            self.seek_confirmed = True
 
     def _sync_metadata(self, moment: float) -> None:
         iso: str = datetime.fromtimestamp(moment, tz=timezone.utc)\
