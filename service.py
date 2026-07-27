@@ -43,6 +43,9 @@ from typing import Any
 
 import xbmc
 import xbmcaddon
+import xbmcgui
+from xbmcgui import ListItem
+from xbmc import InfoTagMusic
 
 ADDON = xbmcaddon.Addon()
 ADDON_ID: str = ADDON.getAddonInfo("id")
@@ -72,12 +75,13 @@ def push_tag(artist: str, title: str, album: str = "", art: str = "") -> None:
     unconditionally so empty CLEARS it and defensive re-pushes restore
     exactly what we pushed."""
     player = xbmc.Player()
+    li:ListItem
     try:
-        li = player.getPlayingItem()
+        li:ListItem  = player.getPlayingItem()
     except RuntimeError:
-        log("  push_tag: nothing playing, skipped", xbmc.LOGWARNING)
+        log("  push_tag: nothing playing, skipped", xbmc.LOGDEBUG)
         return
-    tag = li.getMusicInfoTag()
+    tag:InfoTagMusic = li.getMusicInfoTag()
     tag.setTitle(title)
     if artist:
         tag.setArtist(artist)
@@ -126,7 +130,7 @@ class BaseHandler:
         if (label_title != self.pushed_title
                 or label_album != self.pushed_album):
             log(f"tag stomped (title={label_title!r} album={label_album!r})"
-                f" -> re-pushing {self.pushed_title!r}")
+                f" -> re-pushing {self.pushed_title!r}",xbmc.LOGDEBUG)
             push_tag(self.pushed_artist, self.pushed_title,
                      album=self.pushed_album, art=self.pushed_art)
 
@@ -152,7 +156,7 @@ class BaseHandler:
         if isinstance(results, list) and results \
                 and isinstance(results[0], dict):
             return results[0]
-        log("plays response had no results", xbmc.LOGWARNING)
+        log("plays response had no results", xbmc.LOGDEBUG)
         return None
 
 
@@ -189,14 +193,14 @@ class LiveHandler(BaseHandler):
                 return
             self.last_play_key = key
             log(f"live trackplay: {artist!r} - {title!r} ({album!r})"
-                f" show={show_label!r}")
+                f" show={show_label!r}",xbmc.LOGDEBUG)
             self._push(artist, title, album=album, art=art)
         else:
             key = f"break|{show_label}"
             if key == self.last_play_key:
                 return
             self.last_play_key = key
-            log(f"live {play_type or 'airbreak'}: showing {show_label!r}")
+            log(f"live {play_type or 'airbreak'}: showing {show_label!r}",xbmc.LOGDEBUG)
             self._push(show_label or "KEXP", "Air break")
 
     def _show_label(self, show_id: Any) -> str:
@@ -286,12 +290,12 @@ class ArchiveHandler(BaseHandler):
         if not self.seek_requested:
             if total > 0:
                 log(f"seeking to offset {self.offset:.0f}s"
-                    f" (file duration {total:.0f}s)")
+                    f" (file duration {total:.0f}s)",xbmc.LOGDEBUG)
                 player.seekTime(self.offset)
                 self.seek_requested = True
             elif self.seek_ticks >= self.SEEK_GIVE_UP_TICKS:
                 log("seek: player never became seekable; playing from 0:00",
-                    xbmc.LOGWARNING)
+                    xbmc.LOGDEBUG)
                 self.seek_confirmed = True   # give up; sync from 0:00
             return
 
@@ -302,12 +306,12 @@ class ArchiveHandler(BaseHandler):
             pos = 0.0
         if abs(pos - self.offset) <= self.SEEK_CONFIRM_TOLERANCE:
             log(f"seek confirmed: position {pos:.0f}s ~= offset"
-                f" {self.offset:.0f}s")
+                f" {self.offset:.0f}s",xbmc.LOGDEBUG)
             self.seek_confirmed = True
         elif self.seek_ticks >= self.SEEK_GIVE_UP_TICKS:
             log(f"seek not confirmed after {self.seek_ticks} ticks"
                 f" (position {pos:.0f}s vs offset {self.offset:.0f}s);"
-                f" proceeding anyway", xbmc.LOGWARNING)
+                f" proceeding anyway",xbmc.LOGDEBUG)
             self.seek_confirmed = True
 
     def _sync_metadata(self, moment: float) -> None:
@@ -330,7 +334,7 @@ class ArchiveHandler(BaseHandler):
         if age < -30 or age > 3 * 3600:
             log(f"plays airdate filter looks unsupported (asked <= {iso},"
                 f" got {play.get('airdate')!r}) -- showing show identity"
-                " only", xbmc.LOGWARNING)
+                " only",xbmc.LOGDEBUG)
             key = "fallback"
             if key != self.last_play_key:
                 self.last_play_key = key
@@ -350,14 +354,14 @@ class ArchiveHandler(BaseHandler):
                 return
             self.last_play_key = key
             log(f"archive sync @ {iso}: {artist!r} - {title!r} ({album!r})"
-                f" [{age:.0f}s into it]")
+                f" [{age:.0f}s into it]",xbmc.LOGDEBUG)
             self._push(artist, title, album=album, art=art)
         else:
             key = f"break|{self.show_label}"
             if key == self.last_play_key:
                 return
             self.last_play_key = key
-            log(f"archive sync @ {iso}: airbreak")
+            log(f"archive sync @ {iso}: airbreak",xbmc.LOGDEBUG)
             self._push(self.show_label, "Air break", art=self.show_art)
 
 
@@ -371,16 +375,16 @@ class RadioPlayer(xbmc.Player):
         mode, how = self._identify()
         if mode == "live":
             self.handler = LiveHandler()
-            log(f"  attached LiveHandler (identified via {how})")
+            log(f"  attached LiveHandler (identified via {how})",xbmc.LOGDEBUG)
         elif mode == "archive":
             session = kexpdata.read_session() or {}
             self.handler = ArchiveHandler(session)
             log(f"  attached ArchiveHandler (identified via {how});"
                 f" offset={session.get('offset')!r}"
-                f" show={session.get('show_label')!r}")
+                f" show={session.get('show_label')!r}",xbmc.LOGDEBUG)
         else:
             if self.handler:
-                log("  non-KEXP playback started -> detaching handler")
+                log("  non-KEXP playback started -> detaching handler",xbmc.LOGDEBUG)
             self.handler = None
 
     def _identify(self) -> tuple[str, str]:
@@ -408,12 +412,12 @@ class RadioPlayer(xbmc.Player):
         return "", "no match"
 
     def onPlayBackStopped(self) -> None:
-        log("onPlayBackStopped fired -> detaching handler")
+        log("onPlayBackStopped fired -> detaching handler",xbmc.LOGDEBUG)
         self.handler = None
 
     def onPlayBackEnded(self) -> None:
         # TODO(design): sg-url-next continuation chaining hooks in here.
-        log("onPlayBackEnded fired -> detaching handler")
+        log("onPlayBackEnded fired -> detaching handler",xbmc.LOGDEBUG)
         self.handler = None
 
     def onPlayBackError(self) -> None:
