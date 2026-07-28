@@ -356,6 +356,8 @@ class ArchiveHandler(BaseHandler):
             log(f"archive sync @ {iso}: {artist!r} - {title!r} ({album!r})"
                 f" [{age:.0f}s into it]",xbmc.LOGDEBUG)
             self._push(artist, title, album=album, art=art)
+            log(f"KEXP playing {title} from {album} by {artist}")
+ 
         else:
             key = f"break|{self.show_label}"
             if key == self.last_play_key:
@@ -363,6 +365,7 @@ class ArchiveHandler(BaseHandler):
             self.last_play_key = key
             log(f"archive sync @ {iso}: airbreak",xbmc.LOGDEBUG)
             self._push(self.show_label, "Air break", art=self.show_art)
+            log(f"KEXP playing {self.show_label} air break")
 
 
 class RadioPlayer(xbmc.Player):
