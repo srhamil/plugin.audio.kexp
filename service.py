@@ -236,18 +236,28 @@ class ArchiveHandler(BaseHandler):
         super().__init__()
         self.session = session
         self.offset: float = float(session.get("offset") or 0)
+        # seek_to defaults to the natural top-of-show offset (same as a
+        # fresh show) but the plugin overrides it with a saved bookmark
+        # position when the user chose to resume -- see default.py.
+        self.seek_to: float = float(session.get("seek_to", self.offset))
         self.file_start: float = float(session.get("file_start_epoch") or 0)
         self.show_label: str = str(session.get("show_label") or "KEXP")
         self.show_art: str = str(session.get("art") or "")
+        # Bookmark key -- the show's own 'start_time' string. Falls back to
+        # 'requested' for forward compat with any stale session file
+        # written before 'show_start' existed.
+        self.show_start: str = str(
+            session.get("show_start") or session.get("requested") or "")
         # Seek has three states: not yet requested, requested (waiting for
         # getTime() to actually reflect it), confirmed. We only trust the
         # clock for metadata sync once CONFIRMED -- declaring the seek done
         # the instant seekTime() is called (before getTime() catches up)
         # was anchoring every later sync ~30s early.
-        self.seek_requested: bool = self.offset <= 0
-        self.seek_confirmed: bool = self.offset <= 0
+        self.seek_requested: bool = self.seek_to <= 0
+        self.seek_confirmed: bool = self.seek_to <= 0
         self.seek_ticks: int = 0
         self.next_sync: float = 0.0
+        self.next_bookmark: float = 0.0
         self.last_play_key: str = ""
         # Push the show identity immediately so the OSD is sensible even
         # before the first plays lookup lands.
@@ -258,9 +268,13 @@ class ArchiveHandler(BaseHandler):
         if not self.seek_confirmed:
             self._drive_seek(player)
             return                      # sync metadata only after the seek
+        now = time.monotonic()
+        if now >= self.next_bookmark:
+            self.next_bookmark = now + max(
+                float(setting_int("archive_poll", 10)), 5.0)
+            self._save_bookmark(player)
         if self.file_start <= 0:
             return                      # can't map position -> airdate
-        now = time.monotonic()
         if now < self.next_sync:
             return
         self.next_sync = now + max(float(setting_int("archive_poll", 10)), 5.0)
@@ -270,6 +284,25 @@ class ArchiveHandler(BaseHandler):
             return
         moment: float = self.file_start + position
         self._sync_metadata(moment)
+
+    def _save_bookmark(self, player: xbmc.Player) -> None:
+        if not self.show_start:
+            return
+        try:
+            position: float = player.getTime()
+            total: float = player.getTotalTime()
+        except RuntimeError:
+            return
+        kexpdata.write_bookmark(self.show_start, position, total,
+                                 self.file_start, self.show_label,
+                                 self.show_art)
+
+    def flush_bookmark(self) -> None:
+        """Force-save the resume point immediately (pause/stop/end),
+        bypassing the tick throttle -- catches the last few seconds a
+        periodic save might have missed. Safe to call even if the player
+        has already torn down (RuntimeError -> last periodic save stands)."""
+        self._save_bookmark(xbmc.Player())
 
     def _drive_seek(self, player: xbmc.Player) -> None:
         """Request the seek once the file is seekable, then wait for
@@ -289,9 +322,9 @@ class ArchiveHandler(BaseHandler):
 
         if not self.seek_requested:
             if total > 0:
-                log(f"seeking to offset {self.offset:.0f}s"
+                log(f"seeking to {self.seek_to:.0f}s"
                     f" (file duration {total:.0f}s)",xbmc.LOGDEBUG)
-                player.seekTime(self.offset)
+                player.seekTime(self.seek_to)
                 self.seek_requested = True
             elif self.seek_ticks >= self.SEEK_GIVE_UP_TICKS:
                 log("seek: player never became seekable; playing from 0:00",
@@ -304,13 +337,13 @@ class ArchiveHandler(BaseHandler):
             pos: float = player.getTime()
         except RuntimeError:
             pos = 0.0
-        if abs(pos - self.offset) <= self.SEEK_CONFIRM_TOLERANCE:
-            log(f"seek confirmed: position {pos:.0f}s ~= offset"
-                f" {self.offset:.0f}s",xbmc.LOGDEBUG)
+        if abs(pos - self.seek_to) <= self.SEEK_CONFIRM_TOLERANCE:
+            log(f"seek confirmed: position {pos:.0f}s ~= target"
+                f" {self.seek_to:.0f}s",xbmc.LOGDEBUG)
             self.seek_confirmed = True
         elif self.seek_ticks >= self.SEEK_GIVE_UP_TICKS:
             log(f"seek not confirmed after {self.seek_ticks} ticks"
-                f" (position {pos:.0f}s vs offset {self.offset:.0f}s);"
+                f" (position {pos:.0f}s vs target {self.seek_to:.0f}s);"
                 f" proceeding anyway",xbmc.LOGDEBUG)
             self.seek_confirmed = True
 
@@ -414,13 +447,25 @@ class RadioPlayer(xbmc.Player):
                 return "archive", "session file match"
         return "", "no match"
 
+    def onPlayBackPaused(self) -> None:
+        log("onPlayBackPaused fired", xbmc.LOGDEBUG)
+        if isinstance(self.handler, ArchiveHandler):
+            self.handler.flush_bookmark()
+
     def onPlayBackStopped(self) -> None:
         log("onPlayBackStopped fired -> detaching handler",xbmc.LOGDEBUG)
+        if isinstance(self.handler, ArchiveHandler):
+            self.handler.flush_bookmark()
         self.handler = None
 
     def onPlayBackEnded(self) -> None:
         # TODO(design): sg-url-next continuation chaining hooks in here.
         log("onPlayBackEnded fired -> detaching handler",xbmc.LOGDEBUG)
+        if isinstance(self.handler, ArchiveHandler):
+            # Natural end-of-file: flush_bookmark's position will land
+            # inside BOOKMARK_END_GUARD of total, so write_bookmark clears
+            # the bookmark rather than saving a useless near-the-end one.
+            self.handler.flush_bookmark()
         self.handler = None
 
     def onPlayBackError(self) -> None:

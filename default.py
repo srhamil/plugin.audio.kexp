@@ -314,6 +314,18 @@ def play_archive(params: dict[str, str]) -> None:
     if not start:
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
         return
+
+    # Bookmark check happens BEFORE resolving: the dialog only needs the
+    # saved position/label, not the stream itself. Deferred clearing (on
+    # "play from beginning") until after a successful resolve below, so a
+    # resolver failure can't silently discard a bookmark for nothing.
+    bookmark = kexpdata.read_bookmark(start)
+    resume_requested = False
+    if bookmark is not None:
+        resume_requested = xbmcgui.Dialog().yesno(
+            "KEXP", "Resume at %s?" % kexpdata.resume_label(bookmark),
+            yeslabel="Resume", nolabel="Play from beginning")
+
     info = kexpdata.resolve_stream(start, bitrate_setting())
     if info is None:
         notify("Could not resolve the archive stream (see log)", error=True)
@@ -325,6 +337,17 @@ def play_archive(params: dict[str, str]) -> None:
         offset = int(info.get("sg-offset") or 0)
     except (TypeError, ValueError):
         pass
+
+    # Seek target: the show's natural top-of-show offset by default -- same
+    # as a fresh, never-played show -- overridden by the saved position
+    # only when the user chose to resume.
+    seek_to: float = float(offset)
+    if bookmark is not None:
+        if resume_requested:
+            seek_to = float(bookmark.get("position", offset))
+        else:
+            kexpdata.clear_bookmark(start)
+
     # Broadcast moment of the FILE's first byte: what the service needs
     # to map playback position -> airdate for synced metadata.
     file_start_epoch: float = 0.0
@@ -339,7 +362,9 @@ def play_archive(params: dict[str, str]) -> None:
         "sg_url": str(info.get("sg-url") or ""),
         "sg_url_next": str(info.get("sg-url-next") or ""),
         "offset": offset,
+        "seek_to": seek_to,
         "requested": start,
+        "show_start": start,
         "file_start_epoch": file_start_epoch,
         "show_label": label,
         "art": art,

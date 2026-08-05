@@ -276,6 +276,117 @@ def read_session() -> dict[str, Any] | None:
         return None
 
 
+# --- archive resume bookmarks -----------------------------------------------
+# One entry per show, keyed by the show's own 'start_time' string (the same
+# value already threaded through the play URL as 'start' -- stable, unique
+# per show, no separate id needed). Position is stored in RAW FILE SECONDS,
+# the same coordinate space seekTime()/getTime() use, so a bookmark plugs
+# straight into the existing seek machinery with no translation.
+#
+# Written periodically during playback (service.py's ArchiveHandler, piggy-
+# backing on its existing poll tick) and flushed on pause/stop/end. A write
+# within BOOKMARK_END_GUARD seconds of the end is treated as "finished" and
+# clears the bookmark instead -- callers don't need to special-case the
+# tail themselves. Pruned to the archive retention window on every write,
+# since a bookmark for a show that's aged out of the API is dead weight.
+
+BOOKMARKS_PATH: str = os.path.join(PROFILE, "bookmarks.json")
+BOOKMARK_END_GUARD: float = 60.0   # within this many seconds of the end -> done
+
+
+def _read_bookmarks() -> dict[str, Any]:
+    try:
+        with open(BOOKMARKS_PATH, "r", encoding="utf-8") as f:
+            data: Any = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_bookmarks(data: dict[str, Any]) -> None:
+    ensure_profile()
+    tmp = BOOKMARKS_PATH + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, BOOKMARKS_PATH)
+    except OSError as e:
+        log(f"bookmarks write failed: {e}", xbmc.LOGWARNING)
+
+
+def _prune_bookmarks(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop bookmarks for shows that have aged out of the archive window."""
+    cutoff = time.time() - ARCHIVE_DAYS * 86400.0
+    pruned: dict[str, Any] = {}
+    for show_start, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        dt = parse_iso(show_start)
+        if dt is not None and dt.timestamp() < cutoff:
+            continue
+        pruned[show_start] = entry
+    return pruned
+
+
+def read_bookmark(show_start: str) -> dict[str, Any] | None:
+    """Saved resume point for one show, or None if it has none."""
+    if not show_start:
+        return None
+    entry = _read_bookmarks().get(show_start)
+    return entry if isinstance(entry, dict) else None
+
+
+def write_bookmark(show_start: str, position: float, total: float,
+                    file_start_epoch: float, label: str,
+                    art: str = "") -> None:
+    """Save/update a resume point for `show_start`.
+
+    If `position` is within BOOKMARK_END_GUARD seconds of `total`, the
+    show is treated as finished and any existing bookmark is cleared
+    instead of updated -- mirrors Kodi's own video resume-point behaviour.
+    `total` of 0 (not yet known) skips the end check rather than risking
+    a false clear.
+    """
+    if not show_start or position <= 0:
+        return
+    if total > 0 and position >= total - BOOKMARK_END_GUARD:
+        clear_bookmark(show_start)
+        return
+    data = _prune_bookmarks(_read_bookmarks())
+    data[show_start] = {
+        "position": position,
+        "file_start_epoch": file_start_epoch,
+        "label": label,
+        "art": art,
+        "updated": time.time(),
+    }
+    _write_bookmarks(data)
+
+
+def clear_bookmark(show_start: str) -> None:
+    data = _read_bookmarks()
+    if show_start in data:
+        del data[show_start]
+        _write_bookmarks(data)
+
+
+def resume_label(bookmark: dict[str, Any]) -> str:
+    """Human string for the resume dialog, e.g. '2:14 PM (35 min in)'.
+
+    Avoids strftime's non-portable '%-I' flag; builds the 12-hour clock
+    manually instead.
+    """
+    position: float = float(bookmark.get("position", 0))
+    file_start: float = float(bookmark.get("file_start_epoch", 0))
+    mins = int(position // 60)
+    if file_start > 0:
+        local = datetime.fromtimestamp(file_start + position).astimezone()
+        hour12 = local.hour % 12 or 12
+        clock = f"{hour12}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
+        return f"{clock} ({mins} min in)"
+    return f"{mins} min in"
+
+
 # --- day tile (Shows-by-day grid) ------------------------------------------
 # Kodi's runtime image decoder (setArt thumbs) has NO SVG handler on
 # Omega/LibreELEC ("Could not find suitable input format: image/svg+xml").
