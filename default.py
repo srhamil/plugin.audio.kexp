@@ -380,7 +380,7 @@ def play_archive(params: dict[str, str]) -> None:
     # Skip Kodi's content probe: we know it's MP3, and a probe would
     # spend an extra AIS listening session for nothing.
     li.setMimeType("audio/mpeg")
-    li.setContentLookup(False)
+    #li.setContentLookup(False)
     trace("resolved archive play: %s (offset %ds)" % (label, offset))
     xbmcplugin.setResolvedUrl(HANDLE, True, li)
 
