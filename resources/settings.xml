@@ -5,10 +5,10 @@
             <group id="1">
                 <setting id="live_poll" type="integer" label="32001" help="">
                     <level>0</level>
-                    <default>20</default>
+                    <default>5</default>
                     <constraints>
-                        <minimum>5</minimum>
-                        <maximum>120</maximum>
+                        <minimum>1</minimum>
+                        <maximum>60</maximum>
                     </constraints>
                     <control type="slider" format="integer">
                         <popup>false</popup>
@@ -16,9 +16,9 @@
                 </setting>
                 <setting id="archive_poll" type="integer" label="32002" help="">
                     <level>0</level>
-                    <default>10</default>
+                    <default>5</default>
                     <constraints>
-                        <minimum>5</minimum>
+                        <minimum>1</minimum>
                         <maximum>60</maximum>
                     </constraints>
                     <control type="slider" format="integer">
