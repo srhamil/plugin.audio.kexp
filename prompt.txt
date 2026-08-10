@@ -1,5 +1,6 @@
 PROJECT BOOTSTRAP PROMPT -- plugin.audio.kexp ("KEXP app")
-Last updated: 2026-07-21 (v0.1.0 BETA). Owner: Simon. Purpose: paste into a fresh
+Last updated: 2026-08-10 (v0.1.0 BETA; seek-lag investigation closed this
+date, see section 4b). Owner: Simon. Purpose: paste into a fresh
 conversation to restore full working context for this project.
 
 ================================================================================
@@ -117,9 +118,14 @@ nominal hour -- NEVER schedule math, always sg-offset. URLs stable/
 deterministic/unsigned. StreamGuys host = AIS server, 302-wraps a
 listeningSessionID (Kodi follows natively; never cache session URLs).
 Files: audio/mpeg, Accept-Ranges bytes (native seeking), ~135 kbps for
-bitrate=128. v2 shows carry start_time + program/host names + artwork;
-no end_time (show N ends at show N+1's start). Plays are published
-first, annotated later (comment arrives late -- internetradio lesson).
+bitrate=128. sg-url is IDENTICAL regardless of requested timestamp --
+sg-offset is purely descriptive (seconds-into-file for the requested
+moment); the CDN does NOT return a pre-positioned URL, redirect, or
+scoped token, so there is no server-side way to open a stream already
+seeked to an arbitrary point (see section 4b). v2 shows carry
+start_time + program/host names + artwork; no end_time (show N ends at
+show N+1's start). Plays are published first, annotated later (comment
+arrives late -- internetradio lesson).
 
 ================================================================================
 4. STATUS + FINDINGS (2026-07-21, v0.1.0 BETA)
@@ -162,7 +168,77 @@ LOGGING (beta): routine browse traces (default.py trace()) and per-track
 (attach, seek requested/confirmed, per-track archive sync line, warnings/
 errors). Sync line kept at INFO through beta; demote later.
 
-DEFERRED / KNOWN LIMITATIONS (documented in README, not blockers):
+================================================================================
+4b. SEEK-LAG INVESTIGATION -- CLOSED, NOT FIXABLE AT ADDON LEVEL (2026-08-10)
+================================================================================
+SYMPTOM: bookmark/resume and manual seeks confirmed working end-to-end
+(archive audio resumes at the correct point), but seeking/resuming far
+into a file is slow, and the delay scales with distance -- ~9s for a
+~10-min jump (595s), ~50s for a ~47-min jump (2841s), both measured on
+device via kodi.log.
+
+DIAGNOSTIC METHOD: two full kodi.log captures (small seek, large seek),
+then a third with Kodi's web server JSON-RPC enabled and full curl
+tracing, to see actual HTTP-layer behavior around each seek.
+
+RULED OUT (both original suspect theories):
+  - Missing HTTP Range support -- FALSE. Every seek's "Resume from
+    position N" log line is libcurl setting CURLOPT_RESUME_FROM, which
+    issues a proper "Range: bytes=N-" request. Confirmed present in every
+    capture.
+  - Missing VBR seek index -- FALSE. KEXP confirmed archive files are
+    genuinely CBR ("for precise time-offset calculations and reliable
+    playback buffering" -- their words). The overshoot/EOF/backtrack
+    pattern seen in early captures (seek to a huge byte offset, hit EOF,
+    fall back near byte 0, re-probe) is NOT the seek itself -- it is
+    Kodi's normal one-time file-open duration/EOF probing, which happens
+    on every open regardless of target offset and finishes before any
+    plugin-requested seek is even issued.
+
+ROOT CAUSE (confirmed via full curl trace): once a stream is already
+open, CDVDDemuxFFmpeg's seek to a plugin-requested time does NOT issue a
+new byte-range HTTP request. It decodes and discards packets FORWARD,
+over the network, from the current position to the target -- a decode-
+forward walk, not a byte-jump seek. This is why lag is proportional to
+distance: confirmed by zero new Range/GET requests appearing anywhere in
+the multi-second-to-tens-of-seconds gap between the plugin's "seeking to
+Ns" log line and ffmpeg's eventual "SeekTime - seek ended up on time N"
+resolution.
+
+WORKAROUND ATTEMPTED AND REJECTED: since bitrate is known (CBR, e.g.
+256kbps => 32000 B/s), computed the target byte offset directly
+(offset_seconds * 32000) and opened the stream pre-positioned via a Kodi
+"|Range=bytes=N-" URL modifier, bypassing the open-at-0-then-seek
+pattern entirely. HTTP layer worked perfectly (server returned 206
+Partial Content immediately, correct Content-Range). BUT Kodi's
+CFileCache does not know it opened into the middle of a larger resource
+via this method -- it reads the partial response's Content-Length as if
+it were the full local file size, then runs its normal near-end-of-file
+probe against that wrong length, landing on a nonsensical position and
+falling into a backward crawl in ~1024-byte decrements, reconnecting
+each step, never converging within a 25+ second capture window. This is
+WORSE than the original decode-forward stall, and confirms CFileCache's
+seek bookkeeping has to go through Kodi's own native seek path to stay
+consistent -- there is no clean way to hand it a pre-positioned URL from
+outside that path.
+
+ALSO CONFIRMED DEAD END: get_streaming_url's sg-offset is purely
+descriptive; sg-url is identical no matter what timestamp is requested,
+so there is no server-side mechanism to get a pre-positioned stream (see
+section 3).
+
+CONCLUSION: the bottleneck is inside Kodi/ffmpeg's own demuxer seek
+implementation, not anything plugin.audio.kexp controls or can work
+around from the Python side. INVESTIGATION CLOSED. No further seek-
+lag work is planned -- accepted as a known limitation (documented in
+README). Given how rarely a deep resume-at-checkpoint is expected on
+this appliance, this is not worth further engineering time.
+
+================================================================================
+5. DEFERRED / KNOWN LIMITATIONS (documented in README, not blockers)
+================================================================================
+  - Deep-seek lag -- see section 4b. Investigated and closed; root cause
+    is Kodi/ffmpeg player internals, out of addon scope.
   - sg-url-next continuation chaining (playback stops at file end); hook
     marked in onPlayBackEnded.
   - No archive listening history (open design question).
@@ -174,7 +250,7 @@ DEFERRED / KNOWN LIMITATIONS (documented in README, not blockers):
     if the setting stays; currently a forgiving preference).
 
 ================================================================================
-5. RELATED CONTEXT
+6. RELATED CONTEXT
 ================================================================================
 Siblings: plugin.audio.internetradio (parent architecture; keeps live
 KEXP; its prompt.txt documents the ICY piggyback, tag defense, and

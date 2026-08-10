@@ -60,6 +60,29 @@ or the screen goes black ~10 s into playback:
 
 ## Known limitations (beta)
 
+* **Deep-seek lag (investigated, closed — not fixable at the addon
+  level).** Seeking or resuming far into an archive file is slow, and
+  the delay scales with how far the target is from the current playback
+  position (roughly 9 s for a ~10-minute jump, ~50 s for a ~47-minute
+  jump, measured on-device). Root-caused via `kodi.log` capture with full
+  curl tracing: KEXP's archive files are genuinely CBR (confirmed by
+  KEXP), and Kodi/ffmpeg *does* issue correct HTTP `Range` requests — both
+  of the original suspect theories (missing Range support, missing VBR
+  seek index) were ruled out. The actual cause is that once a stream is
+  already open, `CDVDDemuxFFmpeg::SeekTime` reaches the target by
+  **decoding and discarding forward** over the network rather than
+  jumping to the target byte offset with a fresh Range request — that's
+  what makes the lag proportional to seek distance. A workaround was
+  attempted (opening the stream pre-positioned via a `|Range=bytes=N-`
+  URL modifier, using the known CBR bitrate to compute the target byte
+  offset directly). It worked at the HTTP layer (server returned `206
+  Partial Content` immediately) but broke Kodi's `CFileCache`, which
+  read the partial response's `Content-Length` as if it were the full
+  file size and fell into a non-converging backward crawl — worse than
+  the original stall. This confirmed the bottleneck is inside Kodi's
+  own player/demuxer internals, not something `plugin.audio.kexp` can
+  address. **No further work is planned here**; given how rarely a deep
+  resume is used on this appliance, the lag is accepted as-is.
 * **Metadata timing.** KEXP timestamps each play when the DJ logs it,
   not at the instant it airs, so the displayed song can run a little
   ahead of the audio — the same behavior as KEXP's own players. The
